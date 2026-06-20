@@ -1,0 +1,80 @@
+# ──────────────────────────────────────────────
+# TrafficSense – Bengaluru  .gitignore
+# ──────────────────────────────────────────────
+
+# ── Secrets / Credentials ──────────────────────
+.env
+*.env
+*.key
+*.pem
+
+# ── Python ─────────────────────────────────────
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+share/python-wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# ── Virtual Environments ───────────────────────
+venv/
+env/
+ENV/
+.venv/
+.ENV/
+Pipfile.lock
+
+# ── Database ───────────────────────────────────
+# Commit schema/migrations but not the live DB
+# traffic.db  ← intentionally committed
+
+# ── IDE / Editor ───────────────────────────────
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+Thumbs.db
+
+# ── Node / JS ──────────────────────────────────
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+.npm
+
+# ── Scratch / Temp ─────────────────────────────
+scratch/
+*.tmp
+*.bak
+*.orig
+step_*.txt
+
+# ── OS ─────────────────────────────────────────
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Desktop.ini
