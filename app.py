@@ -29,7 +29,7 @@ def news_sync_worker(news_manager):
         time.sleep(86400)
 
 def create_app(data_base_dir, frontend_dir):
-    app = Flask(__name__, template_folder=frontend_dir)
+    app = Flask(__name__, template_folder=frontend_dir, static_folder=frontend_dir, static_url_path="")
     CORS(app)
     
     app.traffic_report_manager = TrafficReportManager(data_base_dir)
@@ -49,7 +49,7 @@ app = create_app(DATA_BASE_DIR, FRONTEND_FOLDER)
 
 @app.route("/")
 def home():
-    return render_template("assign.html") 
+    return render_template("home.html") 
 
 @app.route("/officer-dashboard")
 def officer_dashboard():
