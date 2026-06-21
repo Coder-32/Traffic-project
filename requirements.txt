@@ -14,3 +14,8 @@ scikit-learn
 ngboost
 google-genai
 pydantic
+networkx
+osmnx
+geopy
+polyline
+scipy
