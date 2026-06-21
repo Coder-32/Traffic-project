@@ -3,6 +3,17 @@ import subprocess
 import sys
 import time
 
+# Reconfigure stdout/stderr to UTF-8 to prevent cp1252 UnicodeEncodeError on Windows
+try:
+    sys.stdout.reconfigure(encoding='utf-8')
+    sys.stderr.reconfigure(encoding='utf-8')
+except AttributeError:
+    pass
+
+# Ensure child processes run with Python 3.14 protobuf overrides
+os.environ["PROTOCOL_BUFFERS_PYTHON_IMPLEMENTATION"] = "python"
+os.environ["PYTHONUTF8"] = "1"
+
 def start_servers():
     print("🚀 Initializing service stack...")
     processes = []
