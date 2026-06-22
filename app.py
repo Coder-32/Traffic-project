@@ -86,6 +86,28 @@ def get_news():
     news = app.news_report_manager.get_news()
     return jsonify({"active_news": news}), 200
 
+
+@app.route("/save_news", methods=["POST"])
+def save_news():
+    data = request.get_json()
+    if not data or not data.get("issue_type") or not data.get("description"):
+        return jsonify({"success": False, "error": "Missing required fields."}), 400
+
+    success, message = app.news_report_manager.insert_external_news(
+        issue_type=data.get("issue_type"),
+        description=data.get("description"),
+        location_name=data.get("location_name"),
+        lat=data.get("lat"),
+        lng=data.get("lng"),
+        priority=data.get("priority", "LOW"),
+        timestamp=data.get("timestamp")
+    )
+
+    if success:
+        return jsonify({"success": True, "message": message}), 200
+    return jsonify({"success": False, "error": message}), 500
+
+
 # Assuming this route is added inside your main app file or a blueprint
 @app.route("/api/police_stations", methods=["GET"])
 def get_all_police_stations():
