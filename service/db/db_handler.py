@@ -76,6 +76,52 @@ class TrafficReportManager:
         except sqlite3.Error as e:
             return False, f"Offline Storage Error: {str(e)}"
 
+    def delete_report(self, report_id):
+        """
+        Deletes a report from the database. Handles plain integers or prefixed string IDs 
+        such as 'raw_12' or 'cluster_5' directly matching frontend combined lists.
+        """
+        try:
+            string_id = str(report_id).strip()
+            target_table = None
+            clean_id = None
+
+            # Determine targeting schema
+            if string_id.startswith("cluster_"):
+                target_table = "active_incidents"
+                clean_id = string_id.replace("cluster_", "")
+            elif string_id.startswith("raw_"):
+                target_table = "traffic_reports"
+                clean_id = string_id.replace("raw_", "")
+            else:
+                clean_id = string_id
+
+            with sqlite3.connect(self.report_db_path) as conn:
+                cursor = conn.cursor()
+                
+                # If specific prefix was found, target only that table
+                if target_table:
+                    cursor.execute(f"DELETE FROM {target_table} WHERE id = ?", (clean_id,))
+                else:
+                    # Fallback structural attempt across both if no prefix matched
+                    cursor.execute("DELETE FROM traffic_reports WHERE id = ?", (clean_id,))
+                    raw_count = cursor.rowcount
+                    cursor.execute("DELETE FROM active_incidents WHERE id = ?", (clean_id,))
+                    cluster_count = cursor.rowcount
+                    
+                    if raw_count > 0 or cluster_count > 0:
+                        conn.commit()
+                        return True, f"Report ID {clean_id} dropped successfully."
+                    return False, f"No report found matching ID {clean_id}."
+
+                conn.commit()
+                if cursor.rowcount > 0:
+                    return True, f"Successfully deleted {string_id}."
+                return False, f"Record {string_id} not found in database."
+
+        except sqlite3.Error as e:
+            return False, f"Database deletion transaction failed: {str(e)}"
+
     def get_active_incidents(self):
         """Returns all active incidents, combining consolidated clusters and raw individual reports."""
         import math
@@ -83,7 +129,6 @@ class TrafficReportManager:
 
         def get_minutes_ago(timestamp_str):
             try:
-                # Parse SQLite default CURRENT_TIMESTAMP format
                 dt = datetime.strptime(timestamp_str, "%Y-%m-%d %H:%M:%S")
                 diff = datetime.utcnow() - dt
                 return max(0, int(diff.total_seconds() / 60))
@@ -92,7 +137,6 @@ class TrafficReportManager:
 
         def get_distance_km(lat1, lng1):
             try:
-                # Bangalore center coordinates
                 lat2, lng2 = 12.9716, 77.5946
                 R = 6371.0
                 dlat = math.radians(lat2 - lat1)
@@ -181,7 +225,6 @@ class TrafficReportManager:
         except sqlite3.Error as e:
             print(f"[DB Read Error]: {e}")
 
-        # Sort combined reports by last_updated DESC
         combined_reports.sort(key=lambda x: x['last_updated'], reverse=True)
         return combined_reports
 
@@ -220,10 +263,8 @@ class TrafficReportManager:
         if not reports:
             return
 
-        # Core Clustering Separation Call
         consolidated_clusters, processed_raw_ids = compute_spatial_clusters(reports, radius_km=0.5)
 
-        # Write clean data and flush processed individual raw tracks out under a safe transaction
         if consolidated_clusters:
             with sqlite3.connect(self.report_db_path) as conn:
                 cursor = conn.cursor()
@@ -246,11 +287,10 @@ class TrafficReportManager:
                     conn.rollback()
                     print(f"[System Transaction Error]: Processing aborted and rolled back: {e}")
 
-
 from datetime import datetime, timezone
 import os
 import sqlite3
-from service.news_handler.collect_news import process_news  # Assuming process_news is the entry point
+from service.news_handler.collect_news import process_news
 
 class NewsReportManager:
     def __init__(self, DATA_BASE_DIR, consolidation_threshold=10):
@@ -325,6 +365,38 @@ class NewsReportManager:
     def _geocode_location(self, location_name):
         """Placeholder method to convert a location name string into coordinates."""
         return 20.5937, 78.9629
+
+    def insert_external_news(self, issue_type: str, description: str, location_name: str = None, lat: float = None, lng: float = None, priority: str = "LOW", timestamp: str = None):
+        """
+        Public endpoint function to manually insert an external singular news story into the database.
+        Automatically resolves coordinates using geocoding if lat/lng are missing.
+        """
+        try:
+            # Fallback to defaults or geocoding if coordinate metadata isn't provided
+            loc_name = location_name if location_name else "India (General)"
+            if lat is None or lng is None:
+                lat, lng = self._geocode_location(loc_name)
+
+            with sqlite3.connect(self.report_db_path) as conn:
+                cursor = conn.cursor()
+                
+                if timestamp:
+                    cursor.execute('''
+                        INSERT INTO traffic_reports (
+                            issue_type, lat, lng, location_name, description, priority, timestamp
+                        ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                    ''', (issue_type, lat, lng, loc_name, description, priority, timestamp))
+                else:
+                    cursor.execute('''
+                        INSERT INTO traffic_reports (
+                            issue_type, lat, lng, location_name, description, priority
+                        ) VALUES (?, ?, ?, ?, ?, ?)
+                    ''', (issue_type, lat, lng, loc_name, description, priority))
+                
+                conn.commit()
+            return True, "External news story saved successfully."
+        except sqlite3.Error as e:
+            return False, f"Database Write Error: {str(e)}"
 
     def insert_news(self):
         """Purges old records, then fetches and logs the latest news stories."""

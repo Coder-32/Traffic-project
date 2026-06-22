@@ -86,6 +86,28 @@ def get_news():
     news = app.news_report_manager.get_news()
     return jsonify({"active_news": news}), 200
 
+
+@app.route("/save_news", methods=["POST"])
+def save_news():
+    data = request.get_json()
+    if not data or not data.get("issue_type") or not data.get("description"):
+        return jsonify({"success": False, "error": "Missing required fields."}), 400
+
+    success, message = app.news_report_manager.insert_external_news(
+        issue_type=data.get("issue_type"),
+        description=data.get("description"),
+        location_name=data.get("location_name"),
+        lat=data.get("lat"),
+        lng=data.get("lng"),
+        priority=data.get("priority", "LOW"),
+        timestamp=data.get("timestamp")
+    )
+
+    if success:
+        return jsonify({"success": True, "message": message}), 200
+    return jsonify({"success": False, "error": message}), 500
+
+
 # Assuming this route is added inside your main app file or a blueprint
 @app.route("/api/police_stations", methods=["GET"])
 def get_all_police_stations():
@@ -229,17 +251,44 @@ def get_route_status():
     
     return jsonify({"incidents": results})
 
-@app.route("/get_ai_prediction", methods=["GET"])
+@app.route("/api/forcast-result", methods=["GET"])
 def get_ai_prediction():
     """
     USE CASE: Invokes the NGBoost + Gemini LLM model on FastAPI.
     Passes traffic factors from Flask to FastAPI to predict incident severity levels 
     and fetch text descriptions of expected blockages.
+
+    EXPECTED RETURN JSON SIGNATURE:
+    {
+      "location": "string",
+      "predicted_cause": "string",
+      "predicted_priority": "string",
+      "severity_score": float,
+      "confidence": float,
+      "severity_lower": float,
+      "severity_upper": float,
+      "llm_severity": float | null,
+      "llm_summary": "string" | null,
+      "llm_recommendation": "string" | null,
+      "model_version": "ngboost-v1",
+      "status": "success"
+    }
+    OR (on error):
+    {
+      "error": "string"
+    }
     """
     # Grab query parameters sent from your frontend web map
     location = request.args.get("location", "Unknown Location")
     current_flow = request.args.get("flow", "heavy")
     weather = request.args.get("weather", "clear")
+
+    # Extract just the hostname (minus the port)
+    host_header = request.headers.get('Host') or '127.0.0.1'
+    hostname = host_header.split(':')[0]
+    
+    # Reconstruct it to force port 8000
+    FASTAPI_URL = f"http://{hostname}:8000"
 
     try:
         # Request data processing from FastAPI ML Engine
@@ -253,13 +302,36 @@ def get_ai_prediction():
         return jsonify({"error": f"Could not reach FastAPI AI Service: {str(e)}"}), 503
 
 
-@app.route("/get_traffic_analytics", methods=["GET"])
+@app.route("/api/analysis", methods=["GET"])
 def get_traffic_analytics():
     """
     USE CASE: Requests aggregated analytics metrics from FastAPI.
     Fetches complex analytical chart points (like peak congestion periods and distribution lists) 
     intended to be displayed on the officer dashboard.
+
+    EXPECTED RETURN JSON SIGNATURE:
+    {
+      "total_incidents_month": int,
+      "avg_predicted_duration": float,
+      "most_affected_junction": "string",
+      "peak_hour": int,
+      "total_resolved": int,
+      "total_active": int,
+      "avg_severity_multiplier": float,
+      "total_officers_deployed": int
+    }
+    OR (on error):
+    {
+      "error": "string"
+    }
     """
+    # Extract just the hostname (minus the port)
+    host_header = request.headers.get('Host') or '127.0.0.1'
+    hostname = host_header.split(':')[0]
+    
+    # Reconstruct it to force port 8000
+    FASTAPI_URL = f"http://{hostname}:8000"
+
     try:
         fastapi_response = requests.get(f"{FASTAPI_URL}/analytics", timeout=5)
         if fastapi_response.status_code == 200:
@@ -269,11 +341,34 @@ def get_traffic_analytics():
         return jsonify({"error": f"Analytics engine unreachable: {str(e)}"}), 503
 
 
-@app.route("/get_predictive_predictions_history", methods=["GET"])
+@app.route("/api/deployment-analysis", methods=["GET"])
 def get_predictive_predictions_history():
     """
     USE CASE: Fetches historical predictions logs stored inside FastAPI database infrastructure.
+
+    EXPECTED RETURN JSON SIGNATURE:
+    {
+      "locations": [
+        {
+          "name": "string",
+          "lat": float,
+          "lng": float
+        }
+      ],
+      "count": int
+    }
+    OR (on error):
+    {
+      "error": "string"
+    }
     """
+    # Extract just the hostname (minus the port)
+    host_header = request.headers.get('Host') or '127.0.0.1'
+    hostname = host_header.split(':')[0]
+    
+    # Reconstruct it to force port 8000
+    FASTAPI_URL = f"http://{hostname}:8000"
+
     try:
         fastapi_response = requests.get(f"{FASTAPI_URL}/api", timeout=5)
         if fastapi_response.status_code == 200:
