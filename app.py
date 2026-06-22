@@ -3,10 +3,13 @@ import time
 import threading
 from flask import Flask, render_template, request, jsonify
 from flask_cors import CORS
+import requests
 
 ROOT_DIR = os.path.dirname(os.path.abspath(__file__))
 FRONTEND_FOLDER = os.path.join(ROOT_DIR, "frontend")
 DATA_BASE_DIR = os.path.join(ROOT_DIR, "database")
+
+FASTAPI_URL = "http://127.0.0.1:8000"
 
 # Import handlers safely
 from service.db.db_handler import TrafficReportManager, NewsReportManager
@@ -35,6 +38,16 @@ def create_app(data_base_dir, frontend_dir):
     app.traffic_report_manager = TrafficReportManager(data_base_dir)
     app.news_report_manager = NewsReportManager(data_base_dir)
     
+    # Initialize city graph once at app startup for route calculations
+    print("[App Initialization]: Loading Bangalore city graph...")
+    city_graph = create_city_graph(os.path.join(ROOT_DIR, "map_cache"), city_name="Bangalore")
+    if city_graph:
+        app.route_manager = RouteManager(city_graph)
+        print("[App Initialization]: ✓ Route manager initialized with city graph")
+    else:
+        print("[App Initialization]: ⚠ Failed to load city graph - routing will be limited")
+        app.route_manager = None
+    
     # Start the daemonized background loop thread
     sync_thread = threading.Thread(
         target=news_sync_worker, 
@@ -60,7 +73,7 @@ def home():
 
 @app.route("/officer-dashboard")
 def officer_dashboard():
-    return render_template("index.html")
+    return render_template("main.html")
 
 @app.route("/get_reports")
 def get_reports():
@@ -117,6 +130,11 @@ def get_all_police_stations():
             "message": f"Unexpected runtime validation error occurred: {str(e)}"
         }), 500
 
+@app.route("/get_police_stations", methods=["GET"])
+def get_police_stations():
+    """Legacy alias for older frontend clients."""
+    return get_all_police_stations()
+
 @app.route("/save_reports", methods=["GET"])
 def save_report():
     location_name = request.args.get("location")       
@@ -148,15 +166,121 @@ def get_assignments():
     """API endpoint providing dispatch routes and localized station inventory counts."""
     city = request.args.get("city", "Bangalore")
     
-    # Initialize your manager using your existing operational system instances
+    # Use the pre-initialized route manager from app context
+    if not app.route_manager:
+        return jsonify({"error": "Route manager not initialized"}), 500
+    
     assignment_mgr = TrafficAssignmentManager(
         report_manager=app.traffic_report_manager,
         news_manager=app.news_report_manager,
-        route_manager=RouteManager(app.traffic_report_manager.get_db_dir())
+        route_manager=app.route_manager
     )
     
     active_assignments = assignment_mgr.assign_reports(city_name=city)
     return jsonify({"assignments": active_assignments})
 
+@app.route("/get_route_status", methods=["GET"])
+def get_route_status():
+    """Returns route status with full polylines for active incidents."""
+    city = request.args.get("city", "Bangalore")
+    
+    if not app.route_manager:
+        return jsonify({"error": "Route manager not initialized", "incidents": []}), 200
+    
+    active_incidents = app.traffic_report_manager.get_active_incidents()
+    results = []
+    
+    for inc in active_incidents:
+        lat = inc.get("lat") or inc.get("mean_lat")
+        lng = inc.get("lng") or inc.get("lng") or inc.get("mean_lng")
+        
+        # Skip incidents with invalid coordinates
+        try:
+            lat_f = float(lat) if lat else None
+            lng_f = float(lng) if lng else None
+            if lat_f is None or lng_f is None:
+                continue
+        except (TypeError, ValueError):
+            continue
+        
+        # Get route from route manager
+        try:
+            assignment = app.route_manager.assign_station_to_incident(
+                incident_lat=lat_f,
+                incident_lon=lng_f,
+                city_name=city
+            )
+            
+            results.append({
+                "report_id": inc.get("id"),
+                "issue_type": inc.get("issue_type"),
+                "priority": inc.get("priority", "MEDIUM"),
+                "location_name": inc.get("location_name") or "Dropped pin",
+                "description": inc.get("description") or "",
+                "coordinates": {"lat": lat_f, "lng": lng_f},
+                "assigned_station": assignment.get("assigned_station"),
+                "station_coordinates": assignment.get("station_location"),
+                "distance_km": assignment.get("distance_km"),
+                "route_polyline": assignment.get("route", [[lat_f, lng_f]])
+            })
+        except Exception as e:
+            print(f"[Route Status Error]: Failed to get route for incident {inc.get('id')}: {e}")
+            continue
+    
+    return jsonify({"incidents": results})
+
+@app.route("/get_ai_prediction", methods=["GET"])
+def get_ai_prediction():
+    """
+    USE CASE: Invokes the NGBoost + Gemini LLM model on FastAPI.
+    Passes traffic factors from Flask to FastAPI to predict incident severity levels 
+    and fetch text descriptions of expected blockages.
+    """
+    # Grab query parameters sent from your frontend web map
+    location = request.args.get("location", "Unknown Location")
+    current_flow = request.args.get("flow", "heavy")
+    weather = request.args.get("weather", "clear")
+
+    try:
+        # Request data processing from FastAPI ML Engine
+        payload = {"location": location, "traffic_flow": current_flow, "weather": weather}
+        fastapi_response = requests.post(f"{FASTAPI_URL}/predict", json=payload, timeout=5)
+        
+        if fastapi_response.status_code == 200:
+            return jsonify(fastapi_response.json()), 200
+        return jsonify({"error": "FastAPI processing error"}), fastapi_response.status_code
+    except requests.exceptions.RequestException as e:
+        return jsonify({"error": f"Could not reach FastAPI AI Service: {str(e)}"}), 503
+
+
+@app.route("/get_traffic_analytics", methods=["GET"])
+def get_traffic_analytics():
+    """
+    USE CASE: Requests aggregated analytics metrics from FastAPI.
+    Fetches complex analytical chart points (like peak congestion periods and distribution lists) 
+    intended to be displayed on the officer dashboard.
+    """
+    try:
+        fastapi_response = requests.get(f"{FASTAPI_URL}/analytics", timeout=5)
+        if fastapi_response.status_code == 200:
+            return jsonify(fastapi_response.json()), 200
+        return jsonify({"error": "Failed to fetch analytical metrics"}), fastapi_response.status_code
+    except requests.exceptions.RequestException as e:
+        return jsonify({"error": f"Analytics engine unreachable: {str(e)}"}), 503
+
+
+@app.route("/get_predictive_predictions_history", methods=["GET"])
+def get_predictive_predictions_history():
+    """
+    USE CASE: Fetches historical predictions logs stored inside FastAPI database infrastructure.
+    """
+    try:
+        fastapi_response = requests.get(f"{FASTAPI_URL}/api", timeout=5)
+        if fastapi_response.status_code == 200:
+            return jsonify(fastapi_response.json()), 200
+        return jsonify({"error": "Failed to load historical database array"}), fastapi_response.status_code
+    except requests.exceptions.RequestException as e:
+        return jsonify({"error": f"Database pipeline communication gap: {str(e)}"}), 503
+    
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=5001, debug=True)
