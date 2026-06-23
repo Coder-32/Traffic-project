@@ -2182,7 +2182,6 @@
             </script>
         </div>
 
-<<<<<<< HEAD
         <div id="viewApi" class="view-panel">
             <h2 style="margin-top: 0; font-size: 20px; font-weight: 700; color: #fff; margin-bottom: 8px;">📡 Operational API Console</h2>
             <p style="color: var(--text-muted); font-size: 13px; margin-bottom: 20px;">Explore, inspect, and test the Bengaluru Civic Grid intelligence endpoint routing infrastructure.</p>
@@ -2335,355 +2334,6 @@
                     </div>
                 </div>
             </div>
-=======
-        <div class="view-pane" id="viewSubmitReportandNews">
-            <style>
-                /* Scoped to avoid global pollution while blending seamlessly with graphite theme */
-                #viewSubmitReportandNews {
-                    background-color: #1a1a24;
-                    border: 1px solid #2e2e3f;
-                    border-radius: 8px;
-                    color: #e2e8f0;
-                    font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
-                    margin: 20px auto;
-                    max-width: 1100px;
-                    box-shadow: 0 4px 15px rgba(0, 0, 0, 0.3);
-                    display: none;
-                    /* Controlled explicitly by your switchTab framework class updates */
-                }
-
-                /* Ensures tab system overrides display none when active class is present */
-                #viewSubmitReportandNews.active {
-                    display: block !important;
-                }
-
-                #viewSubmitReportandNews .panel-header {
-                    display: flex;
-                    justify-content: space-between;
-                    align-items: center;
-                    padding: 15px 20px;
-                    border-bottom: 1px solid #2e2e3f;
-                    background-color: #222232;
-                    border-top-left-radius: 7px;
-                    border-top-right-radius: 7px;
-                }
-
-                #viewSubmitReportandNews .panel-header h3 {
-                    margin: 0;
-                    font-size: 1.15rem;
-                    font-weight: 600;
-                    color: #4facfe;
-                    text-transform: uppercase;
-                    letter-spacing: 0.5px;
-                }
-
-                #viewSubmitReportandNews .panel-body {
-                    display: flex;
-                    flex-wrap: wrap;
-                    gap: 25px;
-                    padding: 20px;
-                    margin: 0;
-                }
-
-                #viewSubmitReportandNews .form-column {
-                    flex: 1;
-                    min-width: 320px;
-                    display: flex;
-                    flex-direction: column;
-                    gap: 15px;
-                }
-
-                #viewSubmitReportandNews .left-parameters {
-                    flex: 0 0 40%;
-                }
-
-                #viewSubmitReportandNews .right-description {
-                    flex: 1;
-                }
-
-                #viewSubmitReportandNews .input-group {
-                    display: flex;
-                    flex-direction: column;
-                    gap: 6px;
-                }
-
-                #viewSubmitReportandNews .input-group.full-height {
-                    flex-grow: 1;
-                }
-
-                #viewSubmitReportandNews label {
-                    font-size: 0.85rem;
-                    color: #94a3b8;
-                    font-weight: 500;
-                    text-align: left;
-                }
-
-                #viewSubmitReportandNews input[type="text"],
-                #viewSubmitReportandNews input[type="number"],
-                #viewSubmitReportandNews select,
-                #viewSubmitReportandNews textarea {
-                    background-color: #0f0f1a;
-                    border: 1px solid #3d3d5c;
-                    border-radius: 4px;
-                    padding: 10px 12px;
-                    color: #f1f5f9;
-                    font-size: 0.9rem;
-                    transition: border-color 0.2s, box-shadow 0.2s;
-                    width: 100%;
-                    box-sizing: border-box;
-                }
-
-                #viewSubmitReportandNews input:focus,
-                #viewSubmitReportandNews select:focus,
-                #viewSubmitReportandNews textarea:focus {
-                    outline: none;
-                    border-color: #00f2fe;
-                    box-shadow: 0 0 5px rgba(0, 242, 254, 0.3);
-                }
-
-                #viewSubmitReportandNews textarea {
-                    resize: none;
-                    min-height: 200px;
-                    height: 100%;
-                }
-
-                #viewSubmitReportandNews .coordinate-row {
-                    display: flex;
-                    gap: 12px;
-                }
-
-                #viewSubmitReportandNews .coordinate-row .input-group {
-                    flex: 1;
-                }
-
-                #viewSubmitReportandNews .btn-toggle {
-                    background-color: #3b82f6;
-                    color: #ffffff;
-                    border: none;
-                    border-radius: 4px;
-                    padding: 8px 14px;
-                    font-size: 0.85rem;
-                    cursor: pointer;
-                    font-weight: 500;
-                    transition: background-color 0.2s;
-                }
-
-                #viewSubmitReportandNews .btn-toggle:hover {
-                    background-color: #2563eb;
-                }
-
-                #viewSubmitReportandNews .form-actions {
-                    display: flex;
-                    justify-content: flex-end;
-                    margin-top: 10px;
-                }
-
-                #viewSubmitReportandNews .btn-submit {
-                    background-image: linear-gradient(135deg, #4facfe 0%, #00f2fe 100%);
-                    color: #0f172a;
-                    border: none;
-                    border-radius: 4px;
-                    padding: 12px 24px;
-                    font-size: 0.95rem;
-                    font-weight: 600;
-                    cursor: pointer;
-                    box-shadow: 0 4px 10px rgba(0, 242, 254, 0.2);
-                    transition: transform 0.1s, opacity 0.2s;
-                }
-
-                #viewSubmitReportandNews .btn-submit:hover {
-                    transform: translateY(-1px);
-                    opacity: 0.95;
-                }
-
-                #viewSubmitReportandNews .btn-submit:active {
-                    transform: translateY(1px);
-                }
-
-                #viewSubmitReportandNews .hidden {
-                    display: none !important;
-                }
-            </style>
-
-            <div class="panel-header">
-                <h3>Create Traffic Entry</h3>
-                <button type="button" id="toggleReportTypeBtn" class="btn-toggle" data-type="report">
-                    Switch to News Mode
-                </button>
-            </div>
-
-            <form id="submissionForm" class="panel-body">
-                <div class="form-column left-parameters">
-                    <div class="input-group">
-                        <label for="issueType">Issue Type</label>
-                        <select id="issueType" name="issue_type" required>
-                            <option value="ACCIDENT">Accident</option>
-                            <option value="CONGESTION">Congestion</option>
-                            <option value="ROADWORK">Roadwork</option>
-                            <option value="WEATHER">Weather Hazard</option>
-                        </select>
-                    </div>
-
-                    <div class="input-group">
-                        <label for="locationName">Location Name</label>
-                        <input type="text" id="locationName" name="location_name" placeholder="e.g. MG Road, Bangalore"
-                            required>
-                    </div>
-
-                    <div class="coordinate-row" id="coordinateFields">
-                        <div class="input-group">
-                            <label for="lat">Latitude</label>
-                            <input type="number" step="any" id="lat" name="lat" placeholder="12.9716">
-                        </div>
-                        <div class="input-group">
-                            <label for="lng">Longitude</label>
-                            <input type="number" step="any" id="lng" name="lng" placeholder="77.5946">
-                        </div>
-                    </div>
-
-                    <div class="input-group">
-                        <label for="priority">Priority Severity</label>
-                        <select id="priority" name="priority">
-                            <option value="LOW">Low</option>
-                            <option value="MEDIUM" selected>Medium</option>
-                            <option value="HIGH">High</option>
-                        </select>
-                    </div>
-
-                    <div class="input-group hidden" id="timestampField">
-                        <label for="timestamp">Timestamp (Optional)</label>
-                        <input type="text" id="timestamp" name="timestamp" placeholder="YYYY-MM-DD HH:MM:SS">
-                    </div>
-                </div>
-
-                <div class="form-column right-description">
-                    <div class="input-group full-height">
-                        <label for="description">Detailed Description / News Content</label>
-                        <textarea id="description" name="description"
-                            placeholder="Provide complete incident notes or copy-paste external news article details here..."
-                            required></textarea>
-                    </div>
-
-                    <div class="form-actions">
-                        <button type="submit" id="submitReportBtn" class="btn-submit">Submit Entry</button>
-                    </div>
-                </div>
-            </form>
-
-            <script>
-                // Use a clean wrapper function executed safely irrespective of template rendering timelines
-                (function () {
-                    function initSubmissionForm() {
-                        const toggleBtn = document.getElementById("toggleReportTypeBtn");
-                        const formTitle = document.querySelector("#viewSubmitReportandNews .panel-header h3");
-                        const timestampField = document.getElementById("timestampField");
-                        const submissionForm = document.getElementById("submissionForm");
-
-                        if (!toggleBtn || !submissionForm) return; // Prevent breaking if DOM elements are detached during partial state renders
-
-                        // 1. View Mode Toggler
-                        toggleBtn.addEventListener("click", function () {
-                            const currentType = toggleBtn.getAttribute("data-type");
-
-                            if (currentType === "report") {
-                                toggleBtn.setAttribute("data-type", "news");
-                                toggleBtn.innerText = "Switch to Report Mode";
-                                formTitle.innerText = "Add External News Story";
-                                timestampField.classList.remove("hidden");
-                            } else {
-                                toggleBtn.setAttribute("data-type", "report");
-                                toggleBtn.innerText = "Switch to News Mode";
-                                formTitle.innerText = "Create Traffic Entry";
-                                timestampField.classList.add("hidden");
-                            }
-                        });
-
-                        // 2. Form Submission Action Processor
-                        submissionForm.addEventListener("submit", function (e) {
-                            e.preventDefault();
-
-                            const currentType = toggleBtn.getAttribute("data-type");
-
-                            const issueType = document.getElementById("issueType").value;
-                            const locationName = document.getElementById("locationName").value;
-                            const description = document.getElementById("description").value;
-                            const priority = document.getElementById("priority").value;
-                            const lat = document.getElementById("lat").value;
-                            const lng = document.getElementById("lng").value;
-
-                            let fetchUrl = "";
-                            let fetchOptions = {};
-
-                            if (currentType === "news") {
-                                fetchUrl = "/save_news";
-
-                                const payload = {
-                                    issue_type: issueType,
-                                    description: description,
-                                    location_name: locationName,
-                                    priority: priority || "LOW"
-                                };
-
-                                if (lat) payload.lat = parseFloat(lat);
-                                if (lng) payload.lng = parseFloat(lng);
-
-                                const timeVal = document.getElementById("timestamp").value;
-                                if (timeVal) payload.timestamp = timeVal;
-
-                                fetchOptions = {
-                                    method: "POST",
-                                    headers: { "Content-Type": "application/json" },
-                                    body: JSON.stringify(payload)
-                                };
-                            } else {
-                                const queryParams = new URLSearchParams({
-                                    location: locationName,
-                                    event_type: issueType,
-                                    description: description,
-                                    lat: lat || "0.0",
-                                    long: lng || "0.0", // Matches backend's request.args.get('long') choice
-                                    priority: priority || "MEDIUM"
-                                });
-
-                                fetchUrl = `/save_reports?${queryParams.toString()}`;
-                                fetchOptions = {
-                                    method: "GET"
-                                };
-                            }
-
-                            fetch(fetchUrl, fetchOptions)
-                                .then(res => res.json())
-                                .then(data => {
-                                    if (data.success) {
-                                        alert(data.message || "Saved successfully!");
-                                        submissionForm.reset();
-
-                                        // Retain selected layout status settings correctly after forms wipe clean
-                                        if (currentType === "news") {
-                                            timestampField.classList.remove("hidden");
-                                        } else {
-                                            timestampField.classList.add("hidden");
-                                        }
-                                    } else {
-                                        alert("Error: " + (data.error || "Failed to save submission."));
-                                    }
-                                })
-                                .catch(err => {
-                                    console.error("Submission Handling Error:", err);
-                                    alert("Network Error saving report.");
-                                });
-                        });
-                    }
-
-                    // Fallback strategy ensuring instant execution if loaded dynamically, or execution once DOM catches up
-                    if (document.readyState === "loading") {
-                        document.addEventListener("DOMContentLoaded", initSubmissionForm);
-                    } else {
-                        initSubmissionForm();
-                    }
-                })();
-            </script>
->>>>>>> dd69047c7ccfc18d4f7b5ceccb7297241589c7f8
         </div>
 
         <div class="view-pane" id="viewControlCenter"
@@ -3283,14 +2933,8 @@
 
         // ── 1. GLOBAL LAYOUT ROUTING TREE ENGINE ──────────────────────────────
         window.switchTab = function (tabName) {
-<<<<<<< HEAD
             const ids = ['btnTabLiveMap', 'btnTabForecast', 'btnTabDeployment', 'btnTabAnalytics', 'btnTabResources', 'btnTabControlCenter', 'btnTabApi', 'btnTabDeploymentAnalysis'];
             const vids = ['viewLiveMap', 'viewForecast', 'viewDeployment', 'viewAnalytics', 'viewResources', 'viewControlCenter', 'viewApi', 'viewDeploymentAnalysis'];
-=======
-            // 1. Appended 'btnTabControlCenter' and 'viewControlCenter' to the state clearance arrays
-            const ids = ['btnTabLiveMap', 'btnTabForecast', 'btnTabDeployment', 'btnTabAnalytics', 'btnTabResources', 'btnTabSubmitReportandNews', 'btnTabControlCenter'];
-            const vids = ['viewLiveMap', 'viewForecast', 'viewDeployment', 'viewAnalytics', 'viewResources', 'viewSubmitReportandNews', 'viewControlCenter'];
->>>>>>> dd69047c7ccfc18d4f7b5ceccb7297241589c7f8
 
             // Clear out prior selected active states completely
             ids.forEach(id => document.getElementById(id)?.classList.remove('active'));
@@ -3334,7 +2978,6 @@
             } else if (tabName === 'controlCenter') { // <--- FIXED: Explicit route handler added
                 document.getElementById('btnTabControlCenter').classList.add('active');
                 document.getElementById('viewControlCenter').classList.add('active');
-<<<<<<< HEAD
                 closeDrawer();
             } else if (tabName === 'api') {
                 document.getElementById('btnTabApi').classList.add('active');
@@ -3346,9 +2989,6 @@
                 document.getElementById('viewDeploymentAnalysis').classList.add('active');
                 closeDrawer();
                 if (typeof window.initDeploymentAnalysisTab === 'function') window.initDeploymentAnalysisTab();
-=======
-                if (typeof closeDrawer === 'function') closeDrawer();
->>>>>>> dd69047c7ccfc18d4f7b5ceccb7297241589c7f8
             }
         };
 
@@ -3991,7 +3631,6 @@
                 L.tileLayer(url, { maxZoom: 20 }).addTo(deploymentAnalysisMapInstance);
             }
         };
-        }
     </script>
 </body>
 
