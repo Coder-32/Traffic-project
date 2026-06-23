@@ -5,11 +5,14 @@ from google.genai import types
 from pydantic import BaseModel 
 from dotenv import load_dotenv
 
-# Find the absolute path to backend/.env relative to this file's location
+# Find the absolute path to backend/.env and root .env relative to this file's location
 base_dir = os.path.dirname(os.path.abspath(__file__))
+root_env_path = os.path.join(os.path.dirname(base_dir), ".env")
 env_path = os.path.join(base_dir, ".env")
 
-# Force load from the correct directory path
+# Force load from the correct directory paths
+if os.path.exists(root_env_path):
+    load_dotenv(dotenv_path=root_env_path)
 load_dotenv(dotenv_path=env_path)
 
 GOOGLE_API_KEY = os.getenv("GEMINI_API_KEY")

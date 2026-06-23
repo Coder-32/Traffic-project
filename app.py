@@ -5,6 +5,7 @@ import threading
 from flask import Flask, render_template, request, jsonify
 from flask_cors import CORS
 import requests
+from dotenv import load_dotenv
 
 try:
     sys.stdout.reconfigure(encoding='utf-8')
@@ -13,6 +14,10 @@ except AttributeError:
     pass
 
 ROOT_DIR = os.path.dirname(os.path.abspath(__file__))
+# Load environment variables
+load_dotenv(os.path.join(ROOT_DIR, ".env"))
+load_dotenv(os.path.join(ROOT_DIR, "backend", ".env"))
+
 FRONTEND_FOLDER = os.path.join(ROOT_DIR, "frontend")
 DATA_BASE_DIR = os.path.join(ROOT_DIR, "database")
 
@@ -295,7 +300,10 @@ def mappls_route():
     origin = request.args.get("origin")
     destination = request.args.get("destination")
     
-    api_key = "ed8f97377b6c6096f202ea64b8487cd1"
+    api_key = os.getenv("MAPPLS_API_KEY")
+    if not api_key:
+        return jsonify({"error": "MAPPLS_API_KEY environment variable is not set."}), 500
+        
     url = f"https://apis.mappls.com/advancedmaps/v1/{api_key}/route_adv/driving/{origin};{destination}?geometries=geojson&steps=true"
     
     try:
