@@ -204,9 +204,12 @@ class DispatchPlanner:
             return "critical"
 
 
+_prediction_cache = {}
+
 def predict_traffic_impact(latitude, longitude, event_cause, priority, description):
     """
     Main prediction function - simplified interface for traffic impact analysis.
+    Includes in-memory cache to prevent slow API/LLM calls on every reload.
     
     Args:
         latitude: Event latitude
@@ -218,8 +221,24 @@ def predict_traffic_impact(latitude, longitude, event_cause, priority, descripti
     Returns:
         dict: Dispatch plan with predictions
     """
+    from datetime import datetime
+    current_hour = datetime.now().hour
+    cache_key = (
+        float(latitude) if latitude else 0.0,
+        float(longitude) if longitude else 0.0,
+        str(event_cause).lower(),
+        str(priority).lower(),
+        str(description).strip(),
+        current_hour
+    )
+    
+    if cache_key in _prediction_cache:
+        return _prediction_cache[cache_key]
+        
     try:
-        return DispatchPlanner.dispatch_plan(latitude, longitude, event_cause, priority, description)
+        res = DispatchPlanner.dispatch_plan(latitude, longitude, event_cause, priority, description)
+        _prediction_cache[cache_key] = res
+        return res
     except Exception as e:
         return {
             "status": "error",

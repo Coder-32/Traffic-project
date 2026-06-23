@@ -11,6 +11,7 @@ class RouteManager:
         # Dynamically locate the JSON dataset relative to this file path
         base_dir = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
         self.stations_json_path = os.path.join(base_dir, "database", "traffic_police_station.json")
+        self._assign_cache = {}
 
     def _calculate_haversine(self, lat1, lon1, lat2, lon2):
         """Calculates straight line distance in kilometers between two points."""
@@ -40,6 +41,10 @@ class RouteManager:
         Estimates closest police station to incident, resolves the path,
         and returns a payload optimized for frontend rendering.
         """
+        cache_key = (float(incident_lat), float(incident_lon), city_name)
+        if cache_key in self._assign_cache:
+            return self._assign_cache[cache_key]
+
         stations = self.load_stations_by_city(city_name)
         if not stations:
             return {"error": f"No stations found for city: {city_name}"}
@@ -69,12 +74,14 @@ class RouteManager:
             print(f"[Route Generation Error]: Could not map graph route path: {e}")
             route_path = [station_coords, incident_coords] # Fallback to direct vector
 
-        return {
+        result = {
             "assigned_station": closest_station["station_name"],
             "station_location": {"lat": closest_station["lat"], "lng": closest_station["lon"]},
             "distance_km": round(min_distance, 2),
             "route": route_path  # List of coordinates/nodes for frontend line strings
         }
+        self._assign_cache[cache_key] = result
+        return result
 
     def recomend_path(self, source, destination, user=None):
         if user and user.priority_score > 0.7:

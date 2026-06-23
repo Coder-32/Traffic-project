@@ -254,6 +254,56 @@ def get_assignments():
     return jsonify({"assignments": active_assignments})
 
 
+@app.route("/api/mappls_route")
+def mappls_route():
+    """Proxy endpoint to resolve Mappls advanced routing without browser CORS restrictions."""
+    origin = request.args.get("origin")
+    destination = request.args.get("destination")
+    
+    api_key = "5c995b0d2e2a85de2bc17a9a68301b2d"
+    url = f"https://apis.mappls.com/advancedmaps/v1/{api_key}/route_adv/driving/{origin};{destination}?geometries=geojson&steps=true"
+    
+    try:
+        response = requests.get(url, timeout=5)
+        return jsonify(response.json()), response.status_code
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/route_diversion")
+def route_diversion():
+    """Calculates a dynamic diversion route avoiding other active incidents using OSMnx."""
+    origin_lat = request.args.get("origin_lat")
+    origin_lng = request.args.get("origin_lng")
+    dest_lat = request.args.get("dest_lat")
+    dest_lng = request.args.get("dest_lng")
+    report_id = request.args.get("report_id")
+    
+    if not app.route_manager:
+        return jsonify({"error": "Route manager not initialized"}), 500
+        
+    try:
+        origin = (float(origin_lat), float(origin_lng))
+        destination = (float(dest_lat), float(dest_lng))
+        
+        # Fetch other active reports to penalize
+        all_incidents = app.traffic_report_manager.get_active_incidents()
+        other_incidents = [inc for inc in all_incidents if inc.get("id") != report_id]
+        
+        from service.route_recomend.util import shortest_path as sp_with_penalties
+        route_coords = sp_with_penalties(
+            app.route_manager.graph, 
+            origin, 
+            destination, 
+            active_incidents=other_incidents
+        )
+        
+        return jsonify({"success": True, "route": route_coords})
+    except Exception as e:
+        print(f"[Diversion Route Error]: {e}")
+        return jsonify({"error": str(e)}), 500
+
+
 @app.route("/get_route_status", methods=["GET"])
 def get_route_status():
     """Returns route status with full polylines for active incidents."""
@@ -429,7 +479,7 @@ def get_traffic_analytics():
     FASTAPI_URL = f"http://{hostname}:8000"
 
     try:
-        fastapi_response = requests.get(f"{FASTAPI_URL}/analytics", timeout=5)
+        fastapi_response = requests.get(f"{FASTAPI_URL}/analytics/summary", timeout=5)
         if fastapi_response.status_code == 200:
             return jsonify(fastapi_response.json()), 200
         return jsonify(
@@ -468,7 +518,7 @@ def get_predictive_predictions_history():
     FASTAPI_URL = f"http://{hostname}:8000"
 
     try:
-        fastapi_response = requests.get(f"{FASTAPI_URL}/api", timeout=5)
+        fastapi_response = requests.get(f"{FASTAPI_URL}/api/locations", timeout=5)
         if fastapi_response.status_code == 200:
             return jsonify(fastapi_response.json()), 200
         return jsonify(

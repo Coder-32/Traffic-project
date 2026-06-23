@@ -44,18 +44,30 @@ class TrafficModelLoader:
             FileNotFoundError: If model or data files are missing
             Exception: If model loading fails
         """
+        if cls._instance is None:
+            cls._instance = cls()
+
         if cls._models_loaded:
             logger.info("Models already loaded, returning cached instance")
             return cls._instance
         
         if cls._load_error:
-            logger.error(f"Previous load error detected: {cls._load_error}")
-            raise RuntimeError(f"Models failed to load: {cls._load_error}")
+            logger.info(f"Previous load error detected ({cls._load_error}). Retrying model load...")
+            cls._load_error = None
         
         # Get the directory where this file is located
         base_dir = os.path.dirname(os.path.abspath(__file__))
         model_path = os.path.join(base_dir, model_dir)
         data_path = os.path.join(base_dir, data_dir)
+        
+        # Fallback to backend folder if not found locally
+        if not os.path.exists(model_path) or not os.path.exists(data_path):
+            project_root = os.path.dirname(os.path.dirname(base_dir))
+            backend_model_path = os.path.join(project_root, "backend", model_dir)
+            backend_data_path = os.path.join(project_root, "backend", data_dir)
+            if os.path.exists(backend_model_path) and os.path.exists(backend_data_path):
+                model_path = backend_model_path
+                data_path = backend_data_path
         
         logger.info(f"[Loading Models] Base directory: {base_dir}")
         logger.info(f"[Loading Models] Model path: {model_path}")
@@ -135,6 +147,8 @@ class TrafficModelLoader:
     @classmethod
     def get_models(cls):
         """Get the loaded models instance"""
+        if cls._instance is None:
+            cls._instance = cls()
         if not cls._models_loaded:
             cls.load_models()
         return cls._instance

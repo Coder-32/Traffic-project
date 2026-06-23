@@ -355,28 +355,33 @@
       })).filter(s => s.lat && s.lng);
 
       state.incidents = assignmentsRaw.map((asn, idx) => {
-        const rawReport = asn.report || {};
+        const rawReport = asn.report || asn || {};
         const coreAssignment = asn.assignment || {};
-        const id = rawReport.report_id || `inc_${idx}`;
+        const id = rawReport.report_id || asn.report_id || `inc_${idx}`;
+
+        // Get coordinates safely
+        let lat = Number(rawReport.lat || (rawReport.coordinates && rawReport.coordinates.lat));
+        let lng = Number(rawReport.lng || (rawReport.coordinates && rawReport.coordinates.lng) || rawReport.long);
 
         return {
           id: id.toString(),
           location_name: rawReport.location_name || "Unknown Point",
           issue_type: rawReport.issue_type || "General Bottleneck",
-          priority: (rawReport.priority || "MEDIUM").toUpperCase(),
-          status: rawReport.status || "enroute",
-          minutes_ago: Number(rawReport.minutes_ago || 0),
-          lat: Number(rawReport.coordinates?.lat || rawReport.lat),
-          lng: Number(rawReport.coordinates?.lng || rawReport.lng),
-          assigned_station: coreAssignment.assigned_station || "Unassigned Control Node",
-          station_location: coreAssignment.station_location || null,
+          priority: (rawReport.priority || asn.priority || "MEDIUM").toUpperCase(),
+          status: rawReport.status || asn.status || "enroute",
+          minutes_ago: Number(rawReport.minutes_ago || asn.minutes_ago || 0),
+          lat: lat,
+          lng: lng,
+          assigned_station: coreAssignment.station_name || coreAssignment.assigned_station || "Unassigned Control Node",
+          station_location: coreAssignment.station_coordinates || coreAssignment.station_location || null,
           distance_km: coreAssignment.distance_km || 0,
-          route_polyline: coreAssignment.route || [],
+          route_polyline: coreAssignment.route_polyline || coreAssignment.route || [],
           predictive_metrics: asn.predictive_metrics || {
             eta_reach_min: Math.floor(coreAssignment.distance_km * 3) || 5,
             eta_resolve_min: 25,
             confidence: 88
-          }
+          },
+          scheduling: asn.scheduling || null
         };
       }).filter(i => i.lat && i.lng);
 
@@ -560,6 +565,25 @@
             <div class="timeline-step"><span class="timeline-dot ${inc.status === 'enroute' ? 'active' : ''}"></span><span class="timeline-label">En Route</span></div>
             <div class="timeline-step"><span class="timeline-dot"></span><span class="timeline-label">On Site</span></div>
             <div class="timeline-step"><span class="timeline-dot"></span><span class="timeline-label">Resolved</span></div>
+          </div>
+        </div>
+
+        <div class="timeline-card" style="margin-top: 16px;">
+          <div style="font-size: 11px; font-weight: 700; letter-spacing: 0.08em; text-transform: uppercase; color: var(--ink-soft); margin-bottom: 10px;">🚓 Deployment Allocation & Resources</div>
+          <div style="display: grid; grid-template-columns: repeat(2, 1fr); gap: 10px; margin-bottom: 10px;">
+            <div style="background: var(--surface-3); padding: 10px; border-radius: 8px;">
+              <div style="font-size: 9px; color: var(--ink-soft); text-transform: uppercase;">Constables Dispatched</div>
+              <div style="font-size: 15px; font-weight: 800; color: var(--primary-soft); margin-top: 4px;">${inc.scheduling?.allocated_resources?.constables_needed || 3} Units</div>
+            </div>
+            <div style="background: var(--surface-3); padding: 10px; border-radius: 8px;">
+              <div style="font-size: 9px; color: var(--ink-soft); text-transform: uppercase;">Barricades Deployed</div>
+              <div style="font-size: 15px; font-weight: 800; color: var(--amber); margin-top: 4px;">${inc.scheduling?.allocated_resources?.barricades_needed || 2} Sets</div>
+            </div>
+          </div>
+          <div style="font-size: 11px; color: var(--ink-soft); border-top: 1px solid var(--line-soft); padding-top: 8px; line-height: 1.4;">
+            📍 Station Inventory Profile:<br>
+            Available Constables: <b>${inc.scheduling?.station_local_inventory?.constables || 10}</b><br>
+            Available Patrol Cars: <b>${inc.scheduling?.station_local_inventory?.patrol_cars || 3}</b>
           </div>
         </div>
       `;

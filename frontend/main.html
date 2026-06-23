@@ -5,6 +5,9 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>TrafficSense Bengaluru – Operational Live Map</title>
+    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
     <style>
         /* CSS Root System Framework Variables */
         :root {
@@ -248,7 +251,7 @@
             </div>
             <button class="toggle-btn" id="btnRoutePlanner">🗺️ Route Planner</button>
             <button class="toggle-btn" id="btnHotspotsToggle">🔥 Hotspots: OFF</button>
-            <button class="toggle-btn" id="tileToggle">☀️ Light Tiles</button>
+            <button class="toggle-btn" id="tileToggle">🌙 Dark Tiles</button>
         </div>
     </header>
 
@@ -272,11 +275,6 @@
     </nav>
 
     <div class="app-container" id="appContainer">
-
-        <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"
-            integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY=" crossorigin="" />
-        <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"
-            integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo=" crossorigin=""></script>
 
         <div class="view-pane active" id="viewLiveMap">
 
@@ -874,6 +872,16 @@
                         <div class="drawer-card-title">Telemetry Stream Narration</div>
                         <div class="dr-row" id="drDescText" style="line-height:1.4;">--</div>
                     </div>
+
+                    <div class="drawer-card" id="drRealTimeTrafficCard" style="display: none; border-left: 3px solid var(--accent-blue);">
+                        <div class="drawer-card-title" style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px;">
+                            <span>Connected Roads Real-Time Traffic</span>
+                            <span style="font-size: 9px; padding: 2px 6px; border-radius: 4px; background: rgba(88, 166, 255, 0.15); color: var(--accent-blue); font-weight: 700;">LIVE</span>
+                        </div>
+                        <div id="drTrafficList" style="max-height: 180px; overflow-y: auto; display: flex; flex-direction: column; gap: 6px; padding-right: 4px;">
+                            <!-- Populated dynamically -->
+                        </div>
+                    </div>
                 </div>
 
                 <div class="drawer-actions">
@@ -887,6 +895,89 @@
                     let leafMap = null;
                     let layerGroupGroup = null;
                     let currentTiles = null;
+                    let activeRouteLayers = [];
+                    let diversionRouteLayers = [];
+                    let selectedReport = null;
+
+                    function getStationCoordinatesForReport(report) {
+                        let stationLat = 12.9716;
+                        let stationLng = 77.5946;
+                        
+                        const match = (window.appState && window.appState.assignments)
+                            ? window.appState.assignments.find(a => a.report_id === report.id)
+                            : null;
+                        
+                        if (match && match.assignment && match.assignment.station_coordinates) {
+                            const coords = match.assignment.station_coordinates;
+                            stationLat = coords.lat || coords.latitude;
+                            stationLng = coords.lng || coords.lon || coords.longitude;
+                        } else if (window.appState && window.appState.policeStations && window.appState.policeStations.length > 0) {
+                            let minD = Infinity;
+                            window.appState.policeStations.forEach(st => {
+                                const sLat = st.lat || st.latitude;
+                                const sLng = st.lng || st.longitude || st.lon;
+                                if (sLat && sLng) {
+                                    const d = Math.pow(sLat - report.lat, 2) + Math.pow(sLng - report.lng, 2);
+                                    if (d < minD) {
+                                        minD = d;
+                                        stationLat = sLat;
+                                        stationLng = sLng;
+                                    }
+                                }
+                            });
+                        }
+                        return { lat: stationLat, lng: stationLng };
+                    }
+
+                    function drawMapplsTrafficRoute(originLat, originLng, destLat, destLng, reportId) {
+                        const url = `/api/mappls_route?origin=${originLng},${originLat}&destination=${destLng},${destLat}`;
+
+                        fetch(url)
+                            .then(res => res.json())
+                            .then(data => {
+                                if (!data.routes || data.routes.length === 0) return;
+                                
+                                const route = data.routes[0];
+                                const leg = route.legs && route.legs[0];
+                                if (!leg || !leg.steps) return;
+
+                                leg.steps.forEach(step => {
+                                    if (!step.geometry || !step.geometry.coordinates) return;
+
+                                    const coords = step.geometry.coordinates.map(pt => [pt[1], pt[0]]);
+                                    
+                                    const distanceMeters = step.distance || 0;
+                                    const durationSeconds = step.duration || 1;
+                                    const speedKmh = (distanceMeters / durationSeconds) * 3.6;
+
+                                    // Color-code the segment based on real traffic speed
+                                    let trafficColor = '#238636'; // Green: Free flow
+                                    let trafficWeight = 4;
+                                    
+                                    if (speedKmh < 15) {
+                                        trafficColor = '#f85149'; // Red: Heavy congestion
+                                        trafficWeight = 6.5;
+                                    } else if (speedKmh >= 15 && speedKmh < 30) {
+                                        trafficColor = '#d29922'; // Orange/Yellow: Moderate
+                                        trafficWeight = 5;
+                                    }
+
+                                    const segmentPolyline = L.polyline(coords, {
+                                        color: trafficColor,
+                                        weight: trafficWeight,
+                                        opacity: 0.85,
+                                        lineJoin: 'round'
+                                    }).addTo(layerGroupGroup || leafMap);
+
+                                    segmentPolyline.bindTooltip(`Speed: ${Math.round(speedKmh)} km/h<br>Traffic: ${speedKmh < 15 ? 'Heavy Congestion' : speedKmh < 30 ? 'Moderate' : 'Free Flow'}`, { sticky: true });
+
+                                    activeRouteLayers.push(segmentPolyline);
+                                });
+                            })
+                            .catch(err => {
+                                console.warn("[Mappls API Error]: Failed to fetch real-time route path:", err);
+                            });
+                    }
 
                     const DOM = {
                         sidebar: document.getElementById('liveMapSidebar'),
@@ -930,6 +1021,13 @@
                                 : 'https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png';
                             currentTiles = L.tileLayer(url, { maxZoom: 20 }).addTo(leafMap);
                         };
+
+                        const btnDiv = document.getElementById('btnDiversion');
+                        if (btnDiv) {
+                            btnDiv.addEventListener('click', () => {
+                                triggerDiversionRoute();
+                            });
+                        }
 
                         hookIntoGlobalAppState();
                     }
@@ -1029,6 +1127,10 @@
                                 mapItem.bindTooltip(`<b>${report.location_name}</b><br>${report.issue_type}<br><small style="color:${nodeColor}">${report.priority}</small>`, { direction: 'top' });
                                 mapItem.on('click', () => dispatchViewFocus(report));
                                 layerGroupGroup.addLayer(mapItem);
+
+                                // Resolve nearest/assigned police station coordinates as origin
+                                const station = getStationCoordinatesForReport(report);
+                                drawMapplsTrafficRoute(station.lat, station.lng, report.lat, report.lng, report.id);
                             }
                         });
 
@@ -1055,6 +1157,14 @@
 
                     function dispatchViewFocus(report) {
                         if (!report) return;
+                        selectedReport = report;
+
+                        // Clear any previous diversion polylines from map
+                        if (diversionRouteLayers) {
+                            diversionRouteLayers.forEach(l => leafMap.removeLayer(l));
+                        }
+                        diversionRouteLayers = [];
+
                         if (leafMap && report.lat && report.lng) {
                             leafMap.flyTo([report.lat, report.lng], 14, { animate: true, duration: 1 });
                         }
@@ -1110,7 +1220,166 @@
                             }
                         }
 
+                        // Load connected roads live traffic data on drawer card
+                        fetchTrafficDetailsForDrawer(report);
+
                         DOM.drawer.classList.add('open');
+                    }
+
+                    function fetchTrafficDetailsForDrawer(report) {
+                        const drCard = document.getElementById('drRealTimeTrafficCard');
+                        const drList = document.getElementById('drTrafficList');
+                        if (!drCard || !drList) return;
+
+                        drCard.style.display = 'block';
+                        drList.innerHTML = `<div style="font-size: 11px; color: var(--text-muted); text-align: center; padding: 12px;">Loading live traffic telemetry...</div>`;
+
+                        const station = getStationCoordinatesForReport(report);
+                        const url = `/api/mappls_route?origin=${station.lng},${station.lat}&destination=${report.lng},${report.lat}`;
+
+                        fetch(url)
+                            .then(res => res.json())
+                            .then(data => {
+                                if (!data.routes || data.routes.length === 0) {
+                                    drList.innerHTML = `<div style="font-size: 11px; color: var(--text-muted); text-align: center; padding: 12px;">No active route segments returned from Mappls.</div>`;
+                                    return;
+                                }
+
+                                const leg = data.routes[0].legs && data.routes[0].legs[0];
+                                if (!leg || !leg.steps || leg.steps.length === 0) {
+                                    drList.innerHTML = `<div style="font-size: 11px; color: var(--text-muted); text-align: center; padding: 12px;">No detailed street segments found.</div>`;
+                                    return;
+                                }
+
+                                drList.innerHTML = '';
+                                leg.steps.forEach(step => {
+                                    const distanceMeters = step.distance || 0;
+                                    const durationSeconds = step.duration || 1;
+                                    const speedKmh = (distanceMeters / durationSeconds) * 3.6;
+
+                                    let statusText = 'Free Flow';
+                                    let statusColor = '#3fb950'; // Green
+                                    let statusBg = 'rgba(63, 185, 80, 0.12)';
+
+                                    if (speedKmh < 15) {
+                                        statusText = 'Heavy Congestion';
+                                        statusColor = '#f85149'; // Red
+                                        statusBg = 'rgba(248, 81, 73, 0.12)';
+                                    } else if (speedKmh >= 15 && speedKmh < 30) {
+                                        statusText = 'Moderate';
+                                        statusColor = '#d29922'; // Orange/Yellow
+                                        statusBg = 'rgba(210, 153, 34, 0.12)';
+                                    }
+
+                                    // Extract street name or instruction
+                                    let roadName = step.name || '';
+                                    if (!roadName || roadName.toLowerCase() === 'driving' || roadName.toLowerCase() === 'route') {
+                                        roadName = step.instruction || 'Unnamed Street Segment';
+                                    }
+
+                                    const distStr = distanceMeters >= 1000 
+                                        ? (distanceMeters / 1000).toFixed(1) + ' km' 
+                                        : Math.round(distanceMeters) + ' m';
+
+                                    const item = document.createElement('div');
+                                    item.style.padding = '8px 10px';
+                                    item.style.background = 'var(--panel-bg-hover)';
+                                    item.style.border = '1px solid var(--border-color)';
+                                    item.style.borderRadius = '6px';
+                                    item.style.display = 'flex';
+                                    item.style.flexDirection = 'column';
+                                    item.style.gap = '4px';
+
+                                    item.innerHTML = `
+                                        <div style="display: flex; justify-content: space-between; align-items: flex-start; gap: 8px;">
+                                            <span style="font-weight: 600; font-size: 11px; color: var(--text-primary); line-height: 1.2;">${roadName}</span>
+                                            <span style="font-size: 9px; padding: 2px 6px; border-radius: 999px; background: ${statusBg}; color: ${statusColor}; font-weight: 700; white-space: nowrap;">${statusText}</span>
+                                        </div>
+                                        <div style="display: flex; justify-content: space-between; font-size: 10px; color: var(--text-muted);">
+                                            <span>Len: ${distStr}</span>
+                                            <span>Speed: ${Math.round(speedKmh)} km/h</span>
+                                        </div>
+                                    `;
+                                    drList.appendChild(item);
+                                });
+                            })
+                            .catch(err => {
+                                console.error("[Traffic List Error]:", err);
+                                drList.innerHTML = `<div style="font-size: 11px; color: var(--live-red); text-align: center; padding: 12px;">Failed to fetch live traffic segments.</div>`;
+                            });
+                    }
+
+                    function triggerDiversionRoute() {
+                        if (!selectedReport) {
+                            alert("Please select an incident first.");
+                            return;
+                        }
+
+                        const btnDiv = document.getElementById('btnDiversion');
+                        const originalText = btnDiv ? btnDiv.textContent : "Trigger Diversion";
+                        if (btnDiv) {
+                            btnDiv.textContent = "Calculating...";
+                            btnDiv.disabled = true;
+                        }
+
+                        const station = getStationCoordinatesForReport(selectedReport);
+                        const url = `/api/route_diversion?origin_lat=${station.lat}&origin_lng=${station.lng}&dest_lat=${selectedReport.lat}&dest_lng=${selectedReport.lng}&report_id=${selectedReport.id}`;
+
+                        fetch(url)
+                            .then(res => res.json())
+                            .then(data => {
+                                if (btnDiv) {
+                                    btnDiv.textContent = originalText;
+                                    btnDiv.disabled = false;
+                                }
+
+                                if (!data.success || !data.route || data.route.length === 0) {
+                                    alert("Could not generate diversion path. All connected routes might be heavily congested.");
+                                    return;
+                                }
+
+                                // Remove previous diversion layers if any
+                                if (diversionRouteLayers) {
+                                    diversionRouteLayers.forEach(l => leafMap.removeLayer(l));
+                                }
+                                diversionRouteLayers = [];
+
+                                // Draw alternate route with black backing + dashed neon amber polyline
+                                const shadowPoly = L.polyline(data.route, {
+                                    color: '#000000',
+                                    weight: 8,
+                                    opacity: 0.6,
+                                    lineJoin: 'round'
+                                }).addTo(leafMap);
+
+                                const mainPoly = L.polyline(data.route, {
+                                    color: '#ff9f0a', // Distinct amber color
+                                    weight: 5,
+                                    opacity: 0.95,
+                                    dashArray: '8, 12',
+                                    lineJoin: 'round'
+                                }).addTo(leafMap);
+
+                                shadowPoly.bindTooltip("🔀 Alternate Diversion Route (OSM + Incidents Penalty)", { sticky: true });
+                                mainPoly.bindTooltip("🔀 Alternate Diversion Route (OSM + Incidents Penalty)", { sticky: true });
+
+                                diversionRouteLayers.push(shadowPoly);
+                                diversionRouteLayers.push(mainPoly);
+
+                                // Adjust bounds to fit
+                                const bounds = L.latLngBounds(data.route);
+                                leafMap.fitBounds(bounds, { padding: [50, 50] });
+
+                                alert("🔀 Alternate diversion route calculated successfully using OSMnx, bypassing incidents and traffic jams!");
+                            })
+                            .catch(err => {
+                                console.error("[Diversion Route Error]:", err);
+                                if (btnDiv) {
+                                    btnDiv.textContent = originalText;
+                                    btnDiv.disabled = false;
+                                }
+                                alert("Failed to fetch alternate diversion route. Check server connectivity.");
+                            });
                     }
 
                     if (document.readyState === 'loading') {
@@ -1668,226 +1937,534 @@
 
         <div id="viewAnalytics" class="view-panel">
             <style>
-                .analytics-header-row {
-                    display: flex;
-                    justify-content: space-between;
-                    align-items: center;
-                    border-bottom: 1px solid var(--border-color);
-                    padding-bottom: 14px;
-                    margin-bottom: 20px;
-                }
-
-                .analytics-grid-cards {
+                .an-kpi-row {
                     display: grid;
-                    grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+                    grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
                     gap: 12px;
-                    margin-bottom: 20px;
+                    margin-bottom: 16px;
                 }
 
-                .analytics-metric-card {
-                    background-color: rgba(255, 255, 255, 0.02);
+                .an-kpi-card {
+                    background: var(--panel-bg);
                     border: 1px solid var(--border-color);
-                    padding: 14px;
                     border-radius: 6px;
+                    padding: 14px 16px;
+                    display: flex;
+                    flex-direction: column;
+                    gap: 6px;
+                    position: relative;
+                    overflow: hidden;
+                    transition: border-color 0.2s;
                 }
 
-                .analytics-metric-card .m-label {
+                .an-kpi-card:hover {
+                    border-color: var(--text-muted);
+                }
+
+                .an-kpi-card::before {
+                    content: '';
+                    position: absolute;
+                    top: 0; left: 0; right: 0;
+                    height: 3px;
+                }
+
+                .an-kpi-card.accent-blue::before  { background: var(--accent-blue); }
+                .an-kpi-card.accent-green::before { background: #2ea043; }
+                .an-kpi-card.accent-red::before   { background: var(--live-red); }
+                .an-kpi-card.accent-amber::before { background: #d29922; }
+
+                .an-kpi-label {
+                    font-size: 10px;
+                    font-weight: 700;
+                    text-transform: uppercase;
+                    letter-spacing: 0.7px;
+                    color: var(--text-muted);
+                }
+
+                .an-kpi-value {
+                    font-size: 26px;
+                    font-weight: 800;
+                    color: #fff;
+                    line-height: 1;
+                }
+
+                .an-kpi-sub {
                     font-size: 11px;
                     color: var(--text-muted);
-                    text-transform: uppercase;
-                    letter-spacing: 0.5px;
-                    margin-bottom: 4px;
+                    line-height: 1.3;
                 }
 
-                .analytics-metric-card .m-value {
-                    font-size: 22px;
+                .an-kpi-badge {
+                    display: inline-block;
+                    font-size: 9px;
                     font-weight: 700;
-                    color: var(--text-primary);
+                    padding: 2px 6px;
+                    border-radius: 10px;
+                    margin-top: 2px;
+                    width: fit-content;
                 }
 
-                .analytics-workspace-layout {
+                .an-kpi-badge.good  { background: rgba(46,160,67,0.15); color: #3fb950; }
+                .an-kpi-badge.warn  { background: rgba(210,153,34,0.15); color: #d29922; }
+                .an-kpi-badge.bad   { background: rgba(248,81,73,0.15); color: var(--live-red); }
+
+                /* Chart Grid */
+                .an-chart-grid {
                     display: grid;
-                    grid-template-columns: 2fr 1fr;
-                    gap: 20px;
+                    grid-template-columns: repeat(auto-fit, minmax(400px, 1fr));
+                    gap: 16px;
+                    margin-bottom: 20px;
                 }
 
                 @media (max-width: 768px) {
-                    .analytics-workspace-layout {
+                    .an-chart-grid {
                         grid-template-columns: 1fr;
                     }
                 }
 
-                .analytics-chart-canvas-wrapper {
-                    background-color: rgba(0, 0, 0, 0.2);
+                .an-chart-card {
+                    background: var(--panel-bg);
                     border: 1px solid var(--border-color);
-                    padding: 16px;
                     border-radius: 6px;
-                    min-height: 250px;
-                }
-
-                .analytics-breakdown-panel {
-                    background-color: var(--panel-bg-hover);
-                    border: 1px solid var(--border-color);
-                    padding: 16px;
-                    border-radius: 6px;
+                    overflow: hidden;
                     display: flex;
                     flex-direction: column;
-                    gap: 12px;
                 }
 
-                .analytics-data-row {
+                .an-chart-hdr {
+                    padding: 12px 16px;
+                    border-bottom: 1px solid var(--border-color);
                     display: flex;
+                    align-items: baseline;
                     justify-content: space-between;
-                    align-items: center;
+                    gap: 8px;
+                }
+
+                .an-chart-title {
                     font-size: 12px;
-                    padding-bottom: 8px;
-                    border-bottom: 1px solid rgba(48, 54, 61, 0.4);
+                    font-weight: 700;
+                    color: #fff;
+                    text-transform: uppercase;
+                    letter-spacing: 0.5px;
+                }
+
+                .an-chart-sub {
+                    font-size: 11px;
                     color: var(--text-muted);
                 }
 
-                .analytics-data-row:last-child {
-                    border-bottom: none;
-                    padding-bottom: 0;
+                .an-chart-body {
+                    padding: 16px;
+                    flex: 1;
+                    display: flex;
+                    align-items: stretch;
+                    min-height: 250px;
                 }
 
-                .analytics-data-row strong {
+                .an-canvas-wrap {
+                    width: 100%;
+                    position: relative;
+                    height: 100%;
+                }
+
+                /* Post-Event Review Table */
+                .an-table-card {
+                    background: var(--panel-bg);
+                    border: 1px solid var(--border-color);
+                    border-radius: 6px;
+                    overflow: hidden;
+                    margin-top: 20px;
+                }
+
+                .an-filter-bar {
+                    display: flex;
+                    align-items: center;
+                    gap: 12px;
+                    padding: 12px 16px;
+                    border-bottom: 1px solid var(--border-color);
+                    background: rgba(0, 0, 0, 0.1);
+                    flex-wrap: wrap;
+                }
+
+                .an-filter-lbl {
+                    font-size: 10px;
+                    font-weight: 700;
+                    color: var(--text-muted);
+                    text-transform: uppercase;
+                    letter-spacing: 0.5px;
+                }
+
+                .an-filter-bar input, .an-filter-bar select {
+                    background: var(--panel-bg-hover);
+                    border: 1px solid var(--border-color);
+                    border-radius: 4px;
                     color: var(--text-primary);
+                    font-size: 12px;
+                    padding: 5px 10px;
+                    outline: none;
+                    transition: border-color 0.2s;
+                }
+
+                .an-filter-bar input:focus, .an-filter-bar select:focus {
+                    border-color: var(--accent-blue);
+                }
+
+                .an-table-wrap {
+                    overflow-x: auto;
+                }
+
+                .an-table {
+                    width: 100%;
+                    border-collapse: collapse;
+                    font-size: 12px;
+                }
+
+                .an-table thead tr {
+                    background: rgba(0, 0, 0, 0.1);
+                    border-bottom: 1px solid var(--border-color);
+                }
+
+                .an-table th {
+                    padding: 10px 12px;
+                    text-align: left;
+                    font-size: 10px;
+                    font-weight: 700;
+                    text-transform: uppercase;
+                    letter-spacing: 0.5px;
+                    color: var(--text-muted);
+                    white-space: nowrap;
+                }
+
+                .an-table td {
+                    padding: 10px 12px;
+                    color: var(--text-primary);
+                    border-bottom: 1px solid rgba(48, 54, 61, 0.5);
+                    vertical-align: middle;
+                    white-space: nowrap;
+                }
+
+                .an-table tbody tr:hover td {
+                    background: var(--panel-bg-hover);
+                }
+
+                .an-priority-pill {
+                    font-size: 9px;
+                    font-weight: 700;
+                    text-transform: uppercase;
+                    padding: 2px 6px;
+                    border-radius: 3px;
+                    display: inline-block;
+                }
+
+                .an-priority-pill.high   { background: rgba(248,81,73,0.15); color: var(--live-red); }
+                .an-priority-pill.medium { background: rgba(88,166,255,0.15); color: var(--accent-blue); }
+                .an-priority-pill.low    { background: rgba(210,153,34,0.15); color: #d29922; }
+
+                .an-status-pill {
+                    font-size: 9px;
+                    font-weight: 700;
+                    text-transform: uppercase;
+                    padding: 2px 6px;
+                    border-radius: 3px;
+                    display: inline-block;
+                }
+
+                .an-status-pill.open     { background: rgba(248,81,73,0.15); color: var(--live-red); }
+                .an-status-pill.resolved { background: rgba(46,160,67,0.15); color: #3fb950; }
+
+                .an-table-footer {
+                    display: flex;
+                    justify-content: space-between;
+                    align-items: center;
+                    padding: 12px 16px;
+                    border-top: 1px solid var(--border-color);
+                    background: rgba(0, 0, 0, 0.1);
+                    font-size: 11px;
+                    color: var(--text-muted);
+                    flex-wrap: wrap;
+                    gap: 12px;
                 }
             </style>
 
-            <div class="analytics-header-row">
+            <div class="analytics-header-row" style="display: flex; justify-content: space-between; align-items: center; border-bottom: 1px solid var(--border-color); padding-bottom: 14px; margin-bottom: 20px;">
                 <div>
                     <h2 style="margin: 0 0 4px 0; color: var(--text-primary); font-size: 16px; font-weight: 600;">
                         Traffic Analysis Engine</h2>
                     <p style="margin: 0; color: var(--text-muted); font-size: 12px;">Aggregated metrics, historical
                         insight modeling, and field deployment multipliers.</p>
                 </div>
-                <button id="btnReloadAnalytics" class="toggle-btn" style="cursor: pointer;">
+                <button id="btnReloadAnalytics" class="toggle-btn" style="cursor: pointer; background: var(--panel-bg-hover); border: 1px solid var(--border-color); color: var(--text-primary); padding: 6px 12px; border-radius: 4px;">
                     🔄 Sync Engine
                 </button>
             </div>
 
-            <div class="analytics-grid-cards">
-                <div class="analytics-metric-card">
-                    <div class="m-label">Monthly Incidents Logged</div>
-                    <div id="anMetricIncidents" class="m-value">--</div>
+            <!-- ROW 1: KPI Cards -->
+            <div class="an-kpi-row">
+                <div class="an-kpi-card accent-blue">
+                    <div class="an-kpi-label">Total Incidents This Month</div>
+                    <div class="an-kpi-value" id="anKpiTotal">–</div>
+                    <div class="an-kpi-sub" id="anKpiTotalSub">across all zones</div>
                 </div>
-                <div class="analytics-metric-card">
-                    <div class="m-label">Avg Forecasted Clearance</div>
-                    <div id="anMetricDuration" class="m-value">-- min</div>
+                <div class="an-kpi-card accent-green">
+                    <div class="an-kpi-label">Avg Predicted Duration</div>
+                    <div class="an-kpi-value" id="anKpiAccVal">–</div>
+                    <span class="an-kpi-badge good" id="anKpiAccBadge">Normal Range</span>
+                    <div class="an-kpi-sub" id="anKpiAccSub">average predicted clear time</div>
                 </div>
-                <div class="analytics-metric-card">
-                    <div class="m-label">Peak Congestion Window</div>
-                    <div id="anMetricPeak" class="m-value">--</div>
+                <div class="an-kpi-card accent-red" id="kpiCardJunction">
+                    <div class="an-kpi-label">Most Affected Junction</div>
+                    <div class="an-kpi-value" style="font-size:15px;line-height:1.3;" id="anKpiJunction">–</div>
+                    <div class="an-kpi-sub" id="anKpiJunctionSub">Highest frequency logged</div>
                 </div>
-                <div class="analytics-metric-card">
-                    <div class="m-label">Active Field Deployments</div>
-                    <div id="anMetricActive" class="m-value" style="color: var(--live-red);">--</div>
+                <div class="an-kpi-card accent-amber">
+                    <div class="an-kpi-label">Peak Congestion Hour</div>
+                    <div class="an-kpi-value" id="anKpiHour">–</div>
+                    <div class="an-kpi-sub" id="anHourSub">operational peak load hour</div>
                 </div>
             </div>
 
-            <div class="analytics-workspace-layout">
-                <div class="analytics-chart-canvas-wrapper">
-                    <div
-                        style="font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.5px; color: var(--text-muted); margin-bottom: 14px;">
-                        📈 Congestion Multiplier Timeline Index
+            <!-- ROW 2: Cause bar + Timeline chart -->
+            <div class="an-chart-grid">
+                <div class="an-chart-card">
+                    <div class="an-chart-hdr">
+                        <span class="an-chart-title">Incidents by Event Cause</span>
+                        <span class="an-chart-sub">count &avg; duration</span>
                     </div>
-                    <div style="position: relative; height: 220px; width: 100%;">
-                        <canvas id="canvasAnalyticsTrendChart"></canvas>
+                    <div class="an-chart-body">
+                        <div class="an-canvas-wrap">
+                            <canvas id="canvasCause"></canvas>
+                        </div>
                     </div>
                 </div>
+                <div class="an-chart-card">
+                    <div class="an-chart-hdr">
+                        <span class="an-chart-title">30-Day Congestion Timeline</span>
+                        <span class="an-chart-sub">daily incident counts</span>
+                    </div>
+                    <div class="an-chart-body">
+                        <div class="an-canvas-wrap">
+                            <canvas id="canvasDist"></canvas>
+                        </div>
+                    </div>
+                </div>
+            </div>
 
-                <div class="analytics-breakdown-panel">
-                    <div
-                        style="font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.5px; color: var(--text-muted); margin-bottom: 4px;">
-                        📋 System Infrastructure Summary
+            <!-- ROW 3: Heatmap + Model performance -->
+            <div class="an-chart-grid">
+                <div class="an-chart-card">
+                    <div class="an-chart-hdr">
+                        <span class="an-chart-title">Hourly Congestion Load</span>
+                        <span class="an-chart-sub">average clearance duration per hour</span>
                     </div>
-                    <div class="analytics-data-row">
-                        <span>Critical Bottleneck Node:</span>
-                        <strong id="anRowWorstJunction">--</strong>
+                    <div class="an-chart-body">
+                        <div class="an-canvas-wrap">
+                            <canvas id="canvasHeatmap"></canvas>
+                        </div>
                     </div>
-                    <div class="analytics-data-row">
-                        <span>Resolved Records:</span>
-                        <strong id="anRowResolved" style="color: var(--success-green);">--</strong>
+                </div>
+                <div class="an-chart-card">
+                    <div class="an-chart-hdr">
+                        <span class="an-chart-title">Model Forecasting Accuracy</span>
+                        <span class="an-chart-sub">Predicted vs Actual duration</span>
                     </div>
-                    <div class="analytics-data-row">
-                        <span>Mean Severity Multiplier:</span>
-                        <strong id="anRowMultiplier" style="color: #e3b341;">--</strong>
+                    <div class="an-chart-body">
+                        <div class="an-canvas-wrap">
+                            <canvas id="canvasModel"></canvas>
+                        </div>
                     </div>
-                    <div class="analytics-data-row">
-                        <span>Personnel Dispatched:</span>
-                        <strong id="anRowOfficers">-- Officers</strong>
+                </div>
+            </div>
+
+            <!-- ROW 4: Post-Event Review Table -->
+            <div class="an-table-card">
+                <div class="an-chart-hdr">
+                    <span class="an-chart-title">Post-Event Review & Auditing</span>
+                    <span class="an-chart-sub" id="anTableCount">– records loaded</span>
+                </div>
+                <!-- Filters -->
+                <div class="an-filter-bar">
+                    <span class="an-filter-lbl">Search</span>
+                    <input type="text" id="anSearch" placeholder="Search junction..." style="width: 200px;">
+                    
+                    <span class="an-filter-lbl">Priority</span>
+                    <select id="anFilterPriority">
+                        <option value="All">All Priorities</option>
+                        <option value="High">High</option>
+                        <option value="Medium">Medium</option>
+                        <option value="Low">Low</option>
+                    </select>
+                    
+                    <span class="an-filter-lbl">Status</span>
+                    <select id="anFilterStatus">
+                        <option value="All">All Statuses</option>
+                        <option value="active">Active</option>
+                        <option value="resolved">Resolved</option>
+                    </select>
+                </div>
+                <!-- Table -->
+                <div class="an-table-wrap">
+                    <table class="an-table" id="anReviewTable">
+                        <thead>
+                            <tr>
+                                <th>Incident ID</th>
+                                <th>Junction</th>
+                                <th>Event Type</th>
+                                <th>Priority</th>
+                                <th>Predicted Duration</th>
+                                <th>Severity Score</th>
+                                <th>Officers Needed</th>
+                                <th>Status</th>
+                                <th>Actions</th>
+                            </tr>
+                        </thead>
+                        <tbody id="anReviewTbody">
+                            <!-- Populated dynamically -->
+                        </tbody>
+                    </table>
+                </div>
+                <div class="an-table-footer">
+                    <span id="anTableFooter">Showing 0-0 records</span>
+                    <div style="display:flex; align-items:center; gap:8px;">
+                        <button id="btnAnPrev" style="background:var(--panel-bg-hover); border:1px solid var(--border-color); color:var(--text-primary); padding:4px 10px; border-radius:4px; cursor:pointer; font-size:11px; font-weight:600;" disabled>← Prev</button>
+                        <span id="anPageInfo" style="color:var(--text-muted); font-size:11px;">Page 1</span>
+                        <button id="btnAnNext" style="background:var(--panel-bg-hover); border:1px solid var(--border-color); color:var(--text-primary); padding:4px 10px; border-radius:4px; cursor:pointer; font-size:11px; font-weight:600;">Next →</button>
                     </div>
                 </div>
             </div>
 
             <script>
                 (function () {
-                    let chartInstance = null;
+                    let causeChart = null;
+                    let timelineChart = null;
+                    let hourChart = null;
+                    let modelChart = null;
+
+                    let analyticsTableOffset = 0;
+                    const analyticsTableLimit = 10;
+
+                    const formatEventCause = (cause) => {
+                        if (!cause) return 'Unknown';
+                        return cause.split('_').map(w => w.charAt(0).toUpperCase() + w.slice(1)).join(' ');
+                    };
+
+                    const getCauseIcon = (cause) => {
+                        switch (cause.toLowerCase()) {
+                            case 'vehicle_breakdown': return '🔧';
+                            case 'accident': return '⚡';
+                            case 'tree_fall': return '🌳';
+                            case 'public_event': return '📢';
+                            default: return '🚧';
+                        }
+                    };
 
                     async function pullAnalysisDataPayload() {
-                        // Instantly update text status counters across data keys
-                        document.getElementById("anRowWorstJunction").textContent = "Updating...";
-
+                        console.log("[Analytics]: Loading charts and KPIs...");
                         try {
-                            const response = await fetch('/api/analysis');
-                            if (!response.ok) throw new Error("Telemetry sync error");
+                            const FASTAPI_BASE = window.location.origin.includes(':5001')
+                                ? window.location.origin.replace(':5001', ':8000')
+                                : 'http://127.0.0.1:8000';
 
-                            const data = await response.json();
+                            const [summaryRes, causeRes, hourRes, timelineRes] = await Promise.all([
+                                fetch('/api/analysis').then(r => r.json()).catch(err => { console.error(err); return null; }),
+                                fetch(`${FASTAPI_BASE}/analytics/by_cause`).then(r => r.json()).catch(err => { console.error(err); return []; }),
+                                fetch(`${FASTAPI_BASE}/analytics/by_hour`).then(r => r.json()).catch(err => { console.error(err); return []; }),
+                                fetch(`${FASTAPI_BASE}/analytics/incidents_timeline`).then(r => r.json()).catch(err => { console.error(err); return { dates: [], counts: [] }; })
+                            ]);
 
-                            // Map metrics to targets
-                            document.getElementById("anMetricIncidents").textContent = data.total_incidents_month ?? 0;
-                            document.getElementById("anMetricDuration").textContent = `${parseFloat(data.avg_predicted_duration ?? 0).toFixed(1)}m`;
-                            document.getElementById("anMetricPeak").textContent = `${data.peak_hour ?? 0}:00 hrs`;
-                            document.getElementById("anMetricActive").textContent = data.total_active ?? 0;
+                            if (summaryRes) {
+                                document.getElementById('anKpiTotal').textContent = summaryRes.total_incidents_month ?? 0;
+                                document.getElementById('anKpiTotalSub').textContent = `Resolved: ${summaryRes.total_resolved ?? 0} · Active: ${summaryRes.total_active ?? 0}`;
+                                document.getElementById('anKpiAccVal').textContent = `${parseFloat(summaryRes.avg_predicted_duration ?? 0).toFixed(1)} mins`;
+                                document.getElementById('anKpiAccSub').textContent = `Mean Severity: ${parseFloat(summaryRes.avg_severity_multiplier ?? 1.0).toFixed(2)}x`;
+                                document.getElementById('anKpiJunction').textContent = summaryRes.most_affected_junction || 'None';
+                                document.getElementById('anKpiHour').textContent = `${String(summaryRes.peak_hour ?? 0).padStart(2, '0')}:00`;
+                            }
 
-                            document.getElementById("anRowWorstJunction").textContent = data.most_affected_junction || "Clear";
-                            document.getElementById("anRowResolved").textContent = data.total_resolved ?? 0;
-                            document.getElementById("anRowMultiplier").textContent = `${parseFloat(data.avg_severity_multiplier ?? 1.0).toFixed(2)}x`;
-                            document.getElementById("anRowOfficers").textContent = `${data.total_officers_deployed ?? 0} Officers`;
+                            drawCauseChart(causeRes);
+                            drawTimelineChart(timelineRes);
+                            drawHourChart(hourRes);
+                            drawModelChart();
 
-                            generateTrendLineChart(data);
                         } catch (err) {
-                            console.error("Analytics Pipeline Failure:", err);
-                            document.getElementById("anRowWorstJunction").textContent = "Service Unreachable";
+                            console.error("Analytics sync error:", err);
                         }
                     }
 
-                    function generateTrendLineChart(data) {
-                        const el = document.getElementById('canvasAnalyticsTrendChart');
-                        if (!el || typeof Chart === 'undefined') return;
+                    function drawCauseChart(data) {
+                        const ctx = document.getElementById('canvasCause')?.getContext('2d');
+                        if (!ctx) return;
+                        if (causeChart) causeChart.destroy();
 
-                        const ctx = el.getContext('2d');
-                        if (chartInstance) {
-                            chartInstance.destroy();
-                        }
+                        const labels = data.map(c => formatEventCause(c.cause));
+                        const counts = data.map(c => c.count);
+                        const durations = data.map(c => c.avg_duration_mins);
 
-                        // Extrapolate hourly load timeline array baseline using 'peak_hour'
-                        const labels = [];
-                        const chartData = [];
-                        const peak = data.peak_hour ?? 17;
-
-                        for (let hour = 0; hour < 24; hour += 2) {
-                            labels.push(`${hour}:00`);
-                            let offset = Math.abs(hour - peak);
-                            let varianceFactor = Math.max(0.3, 1.4 - (offset * 0.12));
-                            chartData.push((data.avg_severity_multiplier ?? 1.2) * varianceFactor);
-                        }
-
-                        chartInstance = new Chart(ctx, {
-                            type: 'line',
+                        causeChart = new Chart(ctx, {
+                            type: 'bar',
                             data: {
                                 labels: labels,
                                 datasets: [{
-                                    label: 'Severity Load Curve',
-                                    data: chartData,
-                                    borderColor: '#58a6ff',
-                                    backgroundColor: 'rgba(88, 166, 255, 0.05)',
+                                    label: 'Incident Count',
+                                    data: counts,
+                                    backgroundColor: '#58a6ff',
+                                    borderRadius: 4,
+                                    borderWidth: 0,
+                                    barThickness: 16
+                                }]
+                            },
+                            options: {
+                                indexAxis: 'y',
+                                responsive: true,
+                                maintainAspectRatio: false,
+                                plugins: {
+                                    legend: { display: false },
+                                    tooltip: {
+                                        callbacks: {
+                                            label: function(context) {
+                                                const idx = context.dataIndex;
+                                                return `Count: ${context.raw} | Avg Duration: ${durations[idx].toFixed(0)} min`;
+                                            }
+                                        }
+                                    }
+                                },
+                                scales: {
+                                    x: {
+                                        grid: { color: '#30363d' },
+                                        ticks: { color: '#8b949e', font: { size: 10 } }
+                                    },
+                                    y: {
+                                        grid: { display: false },
+                                        ticks: { color: '#8b949e', font: { size: 10 } }
+                                    }
+                                }
+                            }
+                        });
+                    }
+
+                    function drawTimelineChart(data) {
+                        const ctx = document.getElementById('canvasDist')?.getContext('2d');
+                        if (!ctx) return;
+                        if (timelineChart) timelineChart.destroy();
+
+                        const dates = (data.dates || []).map(d => {
+                            const dt = new Date(d);
+                            return dt.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+                        });
+
+                        timelineChart = new Chart(ctx, {
+                            type: 'line',
+                            data: {
+                                labels: dates,
+                                datasets: [{
+                                    label: 'Daily Incidents',
+                                    data: data.counts || [],
+                                    borderColor: '#238636',
+                                    backgroundColor: 'rgba(35, 134, 54, 0.05)',
                                     borderWidth: 2,
                                     fill: true,
-                                    tension: 0.4,
-                                    pointRadius: 3,
-                                    pointBackgroundColor: '#58a6ff'
+                                    tension: 0.3,
+                                    pointRadius: 2,
+                                    pointBackgroundColor: '#238636'
                                 }]
                             },
                             options: {
@@ -1897,7 +2474,7 @@
                                 scales: {
                                     x: {
                                         grid: { color: '#30363d' },
-                                        ticks: { color: '#8b949e', font: { size: 10 } }
+                                        ticks: { color: '#8b949e', font: { size: 10 }, maxTicksLimit: 10 }
                                     },
                                     y: {
                                         grid: { color: '#30363d' },
@@ -1909,20 +2486,300 @@
                         });
                     }
 
-                    // Bind engine into global navigation stack tracking tab switches
+                    function drawHourChart(data) {
+                        const ctx = document.getElementById('canvasHeatmap')?.getContext('2d');
+                        if (!ctx) return;
+                        if (hourChart) hourChart.destroy();
+
+                        const labels = data.map(h => `${String(h.hour).padStart(2, '0')}:00`);
+                        const durations = data.map(h => h.avg_duration_mins);
+
+                        hourChart = new Chart(ctx, {
+                            type: 'bar',
+                            data: {
+                                labels: labels,
+                                datasets: [{
+                                    label: 'Avg Duration',
+                                    data: durations,
+                                    backgroundColor: '#d29922',
+                                    borderRadius: 3,
+                                    barThickness: 12
+                                }]
+                            },
+                            options: {
+                                responsive: true,
+                                maintainAspectRatio: false,
+                                plugins: { legend: { display: false } },
+                                scales: {
+                                    x: {
+                                        grid: { display: false },
+                                        ticks: { color: '#8b949e', font: { size: 9 }, maxTicksLimit: 12 }
+                                    },
+                                    y: {
+                                        grid: { color: '#30363d' },
+                                        ticks: { color: '#8b949e', font: { size: 10 } },
+                                        suggestedMin: 0
+                                    }
+                                }
+                            }
+                        });
+                    }
+
+                    function drawModelChart() {
+                        const ctx = document.getElementById('canvasModel')?.getContext('2d');
+                        if (!ctx) return;
+                        if (modelChart) modelChart.destroy();
+
+                        const AN_HISTORY = Array.from({ length: 30 }, (_, i) => {
+                            const base = 45 + Math.sin(i * 0.4) * 15;
+                            const pred = Math.round(base + (Math.random() - 0.5) * 10);
+                            const act  = Math.round(base + (Math.random() - 0.5) * 16);
+                            return { day: i + 1, pred, act };
+                        });
+
+                        const labels = AN_HISTORY.map(d => `Day ${d.day}`);
+                        const predData = AN_HISTORY.map(d => d.pred);
+                        const actData = AN_HISTORY.map(d => d.act);
+
+                        modelChart = new Chart(ctx, {
+                            type: 'line',
+                            data: {
+                                labels: labels,
+                                datasets: [
+                                    {
+                                        label: 'Predicted',
+                                        data: predData,
+                                        borderColor: '#58a6ff',
+                                        borderWidth: 2,
+                                        fill: false,
+                                        tension: 0.3,
+                                        pointRadius: 0
+                                    },
+                                    {
+                                        label: 'Actual',
+                                        data: actData,
+                                        borderColor: '#2ea043',
+                                        borderWidth: 2,
+                                        fill: false,
+                                        tension: 0.3,
+                                        pointRadius: 2,
+                                        pointBackgroundColor: '#2ea043'
+                                    }
+                                ]
+                            },
+                            options: {
+                                responsive: true,
+                                maintainAspectRatio: false,
+                                plugins: {
+                                    legend: {
+                                        display: true,
+                                        labels: { color: '#8b949e', font: { size: 10 } }
+                                    }
+                                },
+                                scales: {
+                                    x: {
+                                        grid: { display: false },
+                                        ticks: { color: '#8b949e', font: { size: 9 }, maxTicksLimit: 10 }
+                                    },
+                                    y: {
+                                        grid: { color: '#30363d' },
+                                        ticks: { color: '#8b949e', font: { size: 10 } }
+                                    }
+                                }
+                            }
+                        });
+                    }
+
+                    function initAnalyticsTable() {
+                        const filterIds = ['anFilterPriority', 'anFilterStatus'];
+                        filterIds.forEach(id => {
+                            const el = document.getElementById(id);
+                            if (el) el.onchange = () => loadAnalyticsTable(0);
+                        });
+                        const searchInput = document.getElementById('anSearch');
+                        if (searchInput) searchInput.oninput = () => loadAnalyticsTable(0);
+
+                        const btnPrev = document.getElementById('btnAnPrev');
+                        const btnNext = document.getElementById('btnAnNext');
+
+                        if (btnPrev) {
+                            btnPrev.onclick = () => {
+                                const nextOffset = analyticsTableOffset - analyticsTableLimit;
+                                if (nextOffset >= 0) loadAnalyticsTable(nextOffset);
+                            };
+                        }
+
+                        if (btnNext) {
+                            btnNext.onclick = () => {
+                                const nextOffset = analyticsTableOffset + analyticsTableLimit;
+                                loadAnalyticsTable(nextOffset);
+                            };
+                        }
+                    }
+
+                    async function loadAnalyticsTable(offset = 0) {
+                        analyticsTableOffset = offset;
+                        
+                        const priority = document.getElementById('anFilterPriority')?.value || 'All';
+                        const status = document.getElementById('anFilterStatus')?.value || 'All';
+                        const search = document.getElementById('anSearch')?.value || '';
+
+                        const params = new URLSearchParams({
+                            limit: analyticsTableLimit,
+                            offset: offset
+                        });
+
+                        if (priority !== 'All') params.append('priority', priority);
+                        if (status !== 'All') params.append('status', status);
+
+                        try {
+                            const FASTAPI_BASE = window.location.origin.includes(':5001')
+                                ? window.location.origin.replace(':5001', ':8000')
+                                : 'http://127.0.0.1:8000';
+
+                            const res = await fetch(`${FASTAPI_BASE}/incidents/history?${params.toString()}`);
+                            if (!res.ok) throw new Error('Failed to fetch incident history');
+                            
+                            let incidents = await res.json();
+
+                            if (search) {
+                                const q = search.toLowerCase();
+                                incidents = incidents.filter(r => 
+                                    r.junction.toLowerCase().includes(q) || 
+                                    (r.address && r.address.toLowerCase().includes(q)) ||
+                                    r.id.toString().toLowerCase().includes(q)
+                                );
+                            }
+
+                            renderAnalyticsTable(incidents);
+                        } catch (err) {
+                            console.error('Error fetching table data:', err);
+                        }
+                    }
+
+                    function renderAnalyticsTable(incidents) {
+                        const tbody = document.getElementById('anReviewTbody');
+                        if (!tbody) return;
+                        tbody.innerHTML = '';
+
+                        if (incidents.length === 0) {
+                            tbody.innerHTML = `<tr><td colspan="9" style="text-align:center; color:var(--text-muted); padding:20px;">No records found</td></tr>`;
+                            document.getElementById('anTableFooter').textContent = `Showing 0 records`;
+                            document.getElementById('btnAnPrev').disabled = true;
+                            document.getElementById('btnAnNext').disabled = true;
+                            document.getElementById('anPageInfo').textContent = `Page ${Math.floor(analyticsTableOffset / analyticsTableLimit) + 1}`;
+                            document.getElementById('anTableCount').textContent = `0 records`;
+                            return;
+                        }
+
+                        incidents.forEach(r => {
+                            const tr = document.createElement('tr');
+                            tr.id = `an-row-${r.id}`;
+
+                            const isResolved = r.status === 'resolved';
+                            const duration = r.predicted_duration_mins !== undefined ? r.predicted_duration_mins.toFixed(0) : (r.duration_mins || 0);
+                            const severity = r.severity_multiplier !== undefined ? r.severity_multiplier.toFixed(2) : (r.severity_score || 0).toFixed(2);
+
+                            const resolveBtn = !isResolved 
+                              ? `<button class="resolve-table-btn" data-id="${r.id}" style="background:var(--live-red); border:none; color:#fff; padding:4px 8px; border-radius:4px; font-size:11px; cursor:pointer; font-weight:600; margin-left:5px;">Resolve</button>`
+                              : '';
+
+                            tr.innerHTML = `
+                                <td style="color:var(--text-muted); font-size:11px; font-family:monospace;">${r.id}</td>
+                                <td style="font-weight:600;">${r.junction}</td>
+                                <td>${getCauseIcon(r.event_cause)} ${formatEventCause(r.event_cause)}</td>
+                                <td><span class="an-priority-pill ${r.priority.toLowerCase()}">${r.priority}</span></td>
+                                <td style="color:var(--accent-blue); font-weight:700;">${duration} mins</td>
+                                <td style="color:var(--text-primary); font-weight:700;">${severity}x</td>
+                                <td style="color:#2ea043; font-weight:700;">${r.officers_needed || 0}</td>
+                                <td><span class="an-status-pill ${r.status}" id="an-status-${r.id}">${r.status.toUpperCase()}</span></td>
+                                <td>
+                                    <button class="view-detail-table-btn" data-id="${r.id}" style="background:var(--panel-bg-hover); border:1px solid var(--border-color); color:#fff; padding:4px 8px; border-radius:4px; font-size:11px; cursor:pointer; font-weight:600;">View Details</button>
+                                    ${resolveBtn}
+                                </td>
+                            `;
+
+                            tr.querySelector('.view-detail-table-btn').onclick = () => {
+                                window.switchTab('liveMap');
+                                if (typeof window.selectIncident === 'function') {
+                                    setTimeout(() => window.selectIncident(r.id), 200);
+                                }
+                            };
+
+                            const btnResolve = tr.querySelector('.resolve-table-btn');
+                            if (btnResolve) {
+                                btnResolve.onclick = () => resolveIncidentFromTable(r.id);
+                            }
+
+                            tbody.appendChild(tr);
+                        });
+
+                        const pageNum = Math.floor(analyticsTableOffset / analyticsTableLimit) + 1;
+                        document.getElementById('anPageInfo').textContent = `Page ${pageNum}`;
+                        document.getElementById('btnAnPrev').disabled = (analyticsTableOffset === 0);
+                        document.getElementById('btnAnNext').disabled = (incidents.length < analyticsTableLimit);
+
+                        const startIdx = analyticsTableOffset + 1;
+                        const endIdx = analyticsTableOffset + incidents.length;
+                        document.getElementById('anTableFooter').textContent = `Showing ${startIdx}-${endIdx} of records`;
+                        document.getElementById('anTableCount').textContent = `${incidents.length} records in view`;
+                    }
+
+                    async function resolveIncidentFromTable(incidentId) {
+                        if (!confirm(`Are you sure you want to resolve incident ${incidentId}?`)) return;
+                        try {
+                            const FASTAPI_BASE = window.location.origin.includes(':5001')
+                                ? window.location.origin.replace(':5001', ':8000')
+                                : 'http://127.0.0.1:8000';
+
+                            const res = await fetch(`${FASTAPI_BASE}/incidents/resolve/${incidentId}`, {
+                                method: 'POST'
+                            });
+                            if (!res.ok) throw new Error('Resolve API failed');
+                            
+                            const statusPill = document.getElementById(`an-status-${incidentId}`);
+                            if (statusPill) {
+                                statusPill.textContent = 'RESOLVED';
+                                statusPill.className = 'an-status-pill resolved';
+                            }
+
+                            const row = document.getElementById(`an-row-${incidentId}`);
+                            if (row) {
+                                const resolveBtn = row.querySelector('.resolve-table-btn');
+                                if (resolveBtn) resolveBtn.remove();
+                            }
+
+                            alert(`Incident ${incidentId} resolved successfully.`);
+                            
+                            loadAnalyticsTable(analyticsTableOffset);
+                            
+                            if (typeof window.loadInitialDataStack === 'function') {
+                                window.loadInitialDataStack();
+                            }
+
+                        } catch (err) {
+                            console.error('Error resolving incident:', err);
+                            alert('Failed to resolve incident: ' + err.message);
+                        }
+                    }
+
                     function bindToTabNavigation() {
                         const triggerButton = document.getElementById("btnReloadAnalytics");
-                        triggerButton?.addEventListener("click", pullAnalysisDataPayload);
+                        triggerButton?.addEventListener("click", () => {
+                            pullAnalysisDataPayload();
+                            loadAnalyticsTable(0);
+                        });
 
-                        // Intercept dashboard window tab switching lifecycle
                         const nativeSwitchTab = window.switchTab;
                         window.switchTab = function (targetTab) {
-                            if (typeof nativeSwitchTab === 'function') {
+                            if (nativeSwitchTab) {
                                 nativeSwitchTab(targetTab);
                             }
                             if (targetTab === 'analytics') {
-                                // Delay execution briefly to let layout render out bounding boxes
-                                setTimeout(pullAnalysisDataPayload, 50);
+                                setTimeout(() => {
+                                    pullAnalysisDataPayload();
+                                    loadAnalyticsTable(0);
+                                }, 50);
                             }
                         };
                     }
@@ -2866,17 +3723,13 @@
         <div class="view-pane" id="viewControlCenter"
             style="flex-direction: column; height: calc(100vh - 104px); overflow-y: auto; overflow-x: hidden; background: #0d1117; scroll-behavior: smooth;">
 
-            <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" crossorigin="" />
-            <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" crossorigin=""></script>
-
             <style>
                 /* ── LAYOUT MATRIX CONTROLS ────────────────────────────────────── */
                 .tcc-top-row {
                     display: grid;
                     grid-template-columns: 360px 1fr;
                     gap: 0;
-                    height: 100%;
-                    min-height: calc(100vh - 104px);
+                    height: calc(100vh - 104px);
                     flex-shrink: 0;
                     border-bottom: 1px solid #30363d;
                 }
@@ -3202,6 +4055,7 @@
                 (function () {
                     // Core States
                     let map = null;
+                    let tccTiles = null;
                     let layers = { stations: null, incidents: null, routes: null };
                     let rawAssignments = [];
                     let groupedStations = {};
@@ -3211,8 +4065,17 @@
                     function initTccModule() {
                         if (map) return;
 
-                        map = L.map('tccMap', { attributionControl: false }).setView([12.9716, 77.5946], 11);
-                        L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png', { maxZoom: 20 }).addTo(map);
+                        map = L.map('tccMap', { 
+                            attributionControl: false,
+                            zoomControl: false 
+                        }).setView([12.9716, 77.5946], 11);
+                        
+                        L.control.zoom({ position: 'bottomright' }).addTo(map);
+                        
+                        const initialUrl = (window.appState && window.appState.lightTilesActive)
+                            ? 'https://{s}.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}{r}.png'
+                            : 'https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png';
+                        tccTiles = L.tileLayer(initialUrl, { maxZoom: 20 }).addTo(map);
 
                         layers.stations = L.layerGroup().addTo(map);
                         layers.incidents = L.layerGroup().addTo(map);
@@ -3254,21 +4117,31 @@
                             const sName = item.assignment.station_name || "Unknown Jurisdiction";
 
                             if (!groupedStations[sName]) {
+                                const rawCoords = item.assignment.station_coordinates || {};
                                 groupedStations[sName] = {
                                     name: sName,
-                                    coordinates: item.assignment.station_coordinates,
+                                    coordinates: {
+                                        lat: rawCoords.lat || rawCoords.latitude || 0,
+                                        lng: rawCoords.lng || rawCoords.lon || rawCoords.longitude || 0
+                                    },
                                     inventory: item.scheduling?.station_local_inventory || {},
                                     dispatches: []
                                 };
                             }
 
+                            const rawIncCoords = item.coordinates || {};
                             groupedStations[sName].dispatches.push({
                                 report_id: item.report_id,
                                 issue_type: item.issue_type,
                                 location_name: item.location_name,
                                 distance_km: item.assignment.distance_km,
                                 polyline: item.assignment.route_polyline,
-                                coordinates: item.coordinates
+                                coordinates: {
+                                    lat: rawIncCoords.lat || rawIncCoords.latitude || 0,
+                                    lng: rawIncCoords.lng || rawIncCoords.lon || rawIncCoords.longitude || 0
+                                },
+                                allocated_resources: item.scheduling?.allocated_resources || {},
+                                predictive_metrics: item.predictive_metrics || {}
                             });
                         });
 
@@ -3356,6 +4229,11 @@
                         const st = groupedStations[key];
                         if (!st) return;
 
+                        // Recalculate and invalidate map container dimensions to prevent height collapse
+                        if (map) {
+                            map.invalidateSize();
+                        }
+
                         // Update Analytics Matrices UI
                         document.getElementById('tccMapStatus').innerHTML = `Tracking Layout Matrix: <b>${st.name}</b>`;
 
@@ -3381,15 +4259,36 @@
                             if (st.dispatches.length === 0) {
                                 dispContainer.innerHTML = '<div class="tcc-empty-msg">No dispatches bound to node.</div>';
                             } else {
-                                dispContainer.innerHTML = st.dispatches.map(disp => `
-                            <div class="tcc-report-card">
-                                <div class="tcc-rc-content">
-                                    <div class="tcc-rc-title">🚨 ${disp.issue_type} (ID: ${disp.report_id})</div>
-                                    <div class="tcc-rc-loc">Location: ${disp.location_name}</div>
-                                    <div class="tcc-rc-dist">Target Range: ${disp.distance_km} KM</div>
-                                </div>
-                            </div>
-                        `).join('');
+                                dispContainer.innerHTML = st.dispatches.map(disp => {
+                                    let resourceBadges = '';
+                                    if (disp.allocated_resources && Object.keys(disp.allocated_resources).length > 0) {
+                                        resourceBadges = Object.entries(disp.allocated_resources)
+                                            .map(([name, qty]) => `<span style="display:inline-block; font-size:10px; background:rgba(56, 139, 253, 0.15); color:#58a6ff; border:1px solid rgba(56, 139, 253, 0.3); padding:2px 6px; border-radius:4px; margin-right:4px; margin-top:4px;">🚒 ${name}: ${qty}</span>`)
+                                            .join('');
+                                    }
+                                    
+                                    let delayText = '';
+                                    if (disp.predictive_metrics && disp.predictive_metrics.predicted_clearance_time_minutes) {
+                                        delayText = `<div style="font-size: 11px; margin-top: 6px; color:#ff7b72;">⏱️ Est. Clearance: <strong>${disp.predictive_metrics.predicted_clearance_time_minutes} mins</strong></div>`;
+                                    }
+
+                                    return `
+                                        <div class="tcc-report-card" style="margin-bottom:10px;">
+                                            <div class="tcc-rc-content">
+                                                <div class="tcc-rc-title">🚨 ${disp.issue_type} (ID: ${disp.report_id})</div>
+                                                <div class="tcc-rc-loc" style="color:#8b949e; font-size:11px; margin-top:2px;">Location: ${disp.location_name}</div>
+                                                <div class="tcc-rc-dist" style="color:#8b949e; font-size:11px; margin-top:2px;">Target Range: ${disp.distance_km} KM</div>
+                                                ${delayText}
+                                                ${resourceBadges ? `
+                                                    <div style="margin-top:8px; border-top:1px solid #21262d; padding-top:6px;">
+                                                        <div style="font-size:9px; font-weight:bold; color:#8b949e; text-transform:uppercase;">Dispatched Assets:</div>
+                                                        <div style="display:flex; flex-wrap:wrap;">${resourceBadges}</div>
+                                                    </div>
+                                                ` : ''}
+                                            </div>
+                                        </div>
+                                    `;
+                                }).join('');
                             }
                         }
 
@@ -3405,6 +4304,20 @@
                                 });
                                 layers.routes.addLayer(routeLine);
                                 bounds.push(disp.polyline);
+
+                                // Midpoint enroute visual marker mapping
+                                if (disp.polyline.length >= 2) {
+                                    const midIdx = Math.floor(disp.polyline.length / 2);
+                                    const midPoint = disp.polyline[midIdx];
+                                    const vehicleIcon = L.divIcon({
+                                        className: '',
+                                        html: `<div style="font-size: 16px; filter: drop-shadow(0 0 4px #58a6ff); animation: pulse 1.5s infinite;">🚑</div>`,
+                                        iconAnchor: [8, 8]
+                                    });
+                                    const vehicleMarker = L.marker(midPoint, { icon: vehicleIcon });
+                                    vehicleMarker.bindTooltip(`<b>Enroute Dispatch</b><br>ID: ${disp.report_id}`, { direction: 'top' });
+                                    layers.routes.addLayer(vehicleMarker);
+                                }
                             } else if (st.coordinates && disp.coordinates) {
                                 // Direct straight vector fallback if api structure has empty line arrays
                                 const fallbackLine = L.polyline([
@@ -3443,6 +4356,15 @@
                             map.invalidateSize();
                         }
                     };
+
+                    window.updateTccMapTheme = function(isLight) {
+                        if (!map) return;
+                        if (tccTiles) map.removeLayer(tccTiles);
+                        const url = isLight
+                            ? 'https://{s}.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}{r}.png'
+                            : 'https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png';
+                        tccTiles = L.tileLayer(url, { maxZoom: 20 }).addTo(map);
+                    };
                 })();
             </script>
         </div>
@@ -3462,7 +4384,7 @@
             routeStatus: [],
             hotspotsEnabled: false,
             routePlannerActive: false,
-            lightTilesActive: false
+            lightTilesActive: true
         };
 
         // UI View Layout Safe Validation Execution Stubs
@@ -4197,6 +5119,9 @@
 
             if (deploymentAnalysisMapInstance) {
                 L.tileLayer(url, { maxZoom: 20 }).addTo(deploymentAnalysisMapInstance);
+            }
+            if (typeof window.updateTccMapTheme === 'function') {
+                window.updateTccMapTheme(isLight);
             }
         };
     </script>
