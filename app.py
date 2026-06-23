@@ -364,6 +364,39 @@ def route_diversion():
         return jsonify({"error": str(e)}), 500
 
 
+@app.route("/api/route_planner")
+def route_planner():
+    """Calculates a detailed route with traffic segment color coding avoiding active blockages."""
+    origin_lat = request.args.get("origin_lat")
+    origin_lng = request.args.get("origin_lng")
+    dest_lat = request.args.get("dest_lat")
+    dest_lng = request.args.get("dest_lng")
+
+    if not app.route_manager:
+        return jsonify({"error": "Route manager not initialized"}), 500
+
+    try:
+        origin = (float(origin_lat), float(origin_lng))
+        destination = (float(dest_lat), float(dest_lng))
+
+        # Fetch all active incidents to penalize
+        active_incidents = app.traffic_report_manager.get_active_incidents()
+
+        from service.route_recomend.util import shortest_path_with_traffic
+        result = shortest_path_with_traffic(
+            app.route_manager.graph,
+            origin,
+            destination,
+            active_incidents=active_incidents
+        )
+
+        return jsonify({"success": True, "result": result})
+    except Exception as e:
+        print(f"[Route Planner API Error]: {e}")
+        return jsonify({"error": str(e)}), 500
+
+
+
 @app.route("/get_route_status", methods=["GET"])
 def get_route_status():
     """Returns route status with full polylines for active incidents."""

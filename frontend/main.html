@@ -250,7 +250,6 @@
                 </button>
             </div>
             <button class="toggle-btn" id="btnRoutePlanner">🗺️ Route Planner</button>
-            <button class="toggle-btn" id="btnHotspotsToggle">🔥 Hotspots: OFF</button>
             <button class="toggle-btn" id="tileToggle">🌙 Dark Tiles</button>
         </div>
     </header>
@@ -964,6 +963,52 @@
                 </div>
             </div>
 
+            <!-- ROUTE PLANNER DRAWER -->
+            <div class="drawer" id="routePlannerPanel">
+                <div class="drawer-header">
+                    <div class="drawer-header-left">
+                        <span class="drawer-icon">🗺️</span>
+                        <span class="drawer-title" style="font-weight: 600;">Smart Route Planner</span>
+                    </div>
+                    <button class="drawer-close-btn" id="rpCloseBtn" title="Close Route Planner">✕</button>
+                </div>
+                <div class="drawer-content" style="padding: 16px; display: flex; flex-direction: column; gap: 15px; overflow-y: auto;">
+                    <div style="color: var(--text-muted); font-size: 12px; margin-bottom: 5px;">
+                        Plan coordinates connecting two points avoiding active incidents & blockages.
+                    </div>
+                    
+                    <div class="drawer-card" style="padding: 12px; background: rgba(255,255,255,0.02); border: 1px solid var(--border-color); border-radius: 6px;">
+                        <label style="display: block; font-size: 11px; color: var(--text-muted); margin-bottom: 5px; text-transform: uppercase; font-weight: 600;">Origin Point:</label>
+                        <div style="display: flex; gap: 8px; margin-bottom: 8px;">
+                            <button id="btnRouteOriginLocation" class="dr-action-btn" style="flex: 1; padding: 6px; font-size: 11px;">📏 Current Loc</button>
+                            <button id="btnRouteOriginPick" class="dr-action-btn" style="flex: 1; padding: 6px; font-size: 11px;">📍 Click Map</button>
+                        </div>
+                        <input type="text" id="routeOriginCoords" readonly placeholder="No origin coordinates set" style="width: 100%; padding: 8px; background: rgba(0,0,0,0.2); border: 1px solid var(--border-color); color: var(--text-muted); border-radius: 4px; box-sizing: border-box; font-size: 11px; font-family: monospace;">
+                    </div>
+                    
+                    <div class="drawer-card" style="padding: 12px; background: rgba(255,255,255,0.02); border: 1px solid var(--border-color); border-radius: 6px;">
+                        <label style="display: block; font-size: 11px; color: var(--text-muted); margin-bottom: 5px; text-transform: uppercase; font-weight: 600;">Destination Point:</label>
+                        <div style="display: flex; gap: 8px; margin-bottom: 8px;">
+                            <button id="btnRouteDestPick" class="dr-action-btn" style="width: 100%; padding: 6px; font-size: 11px;">📏 Pick on Map</button>
+                        </div>
+                        <input type="text" id="routeDestCoords" readonly placeholder="No destination coordinates set" style="width: 100%; padding: 8px; background: rgba(0,0,0,0.2); border: 1px solid var(--border-color); color: var(--text-muted); border-radius: 4px; box-sizing: border-box; font-size: 11px; font-family: monospace;">
+                    </div>
+                    
+                    <button id="btnFindSafeRoute" class="dr-action-btn primary" style="width: 100%; padding: 10px; font-weight: bold; font-size: 13px; text-transform: uppercase; letter-spacing: 0.5px; cursor: pointer;">Find Safe Route</button>
+                    
+                    <div id="routePlannerLoading" style="display: none; align-items: center; justify-content: center; gap: 8px; font-size: 12px; color: var(--text-muted); margin-top: 10px;">
+                        <div class="loading-spinner" style="width: 16px; height: 16px; border: 2px solid var(--border-color); border-top-color: var(--accent-blue); border-radius: 50%; animation: spin 1s linear infinite;"></div>
+                        <span id="routePlannerLoadingText">Calculating...</span>
+                    </div>
+                    
+                    <div id="routeResultsContainer" style="display: flex; flex-direction: column; gap: 12px; margin-top: 10px;">
+                        <!-- Results cards render here -->
+                    </div>
+                    
+                    <button id="btnClearRoutes" class="dr-action-btn" style="width: 100%; padding: 8px; font-size: 11px; background-color: rgba(230,57,70,0.12); border-color: #e63946; color: #e63946; display: none; cursor: pointer;">Clear Route Lines</button>
+                </div>
+            </div>
+
             <script>
                 (function () {
                     let leafMap = null;
@@ -973,6 +1018,13 @@
                     let diversionRouteLayers = [];
                     let barricadeLayers = [];   // All current barricade markers + zone lines
                     let selectedReport = null;
+                    let routePlannerOrigin = null;
+                    let routePlannerDest = null;
+                    let routePlannerOriginMarker = null;
+                    let routePlannerDestMarker = null;
+                    let routePlannerLayers = [];
+                    let pickingPointType = null;
+                    let mapClickHandler = null;
 
                     function getStationCoordinatesForReport(report) {
                         let stationLat = 12.9716;
@@ -1064,6 +1116,240 @@
                                 console.warn("[Mappls API Error]: Failed to fetch real-time route path:", err);
                             });
                     }
+
+                    // --- SMART ROUTE PLANNER FUNCTIONALITY ---
+                    window.toggleRoutePlanner = function () {
+                        const panel = document.getElementById('routePlannerPanel');
+                        const isCurrentlyOpen = panel.classList.contains('open');
+                        
+                        if (isCurrentlyOpen) {
+                            window.closeRoutePlanner();
+                        } else {
+                            // Close other drawers
+                            DOM.drawer.classList.remove('open');
+                            panel.classList.add('open');
+                            appState.routePlannerActive = true;
+                            document.getElementById("btnRoutePlanner")?.classList.add("active-mode");
+                        }
+                    };
+
+                    window.closeRoutePlanner = function () {
+                        const panel = document.getElementById('routePlannerPanel');
+                        panel.classList.remove('open');
+                        appState.routePlannerActive = false;
+                        document.getElementById("btnRoutePlanner")?.classList.remove("active-mode");
+                        cancelPickingPoint();
+                    };
+
+                    // Close button listener
+                    document.getElementById('rpCloseBtn')?.addEventListener('click', () => {
+                        window.closeRoutePlanner();
+                    });
+
+                    document.getElementById('btnRouteOriginLocation')?.addEventListener('click', () => {
+                        window.setRouteOriginCurrent();
+                    });
+
+                    document.getElementById('btnRouteOriginPick')?.addEventListener('click', () => {
+                        window.pickRoutePoint('origin');
+                    });
+
+                    document.getElementById('btnRouteDestPick')?.addEventListener('click', () => {
+                        window.pickRoutePoint('destination');
+                    });
+
+                    document.getElementById('btnFindSafeRoute')?.addEventListener('click', () => {
+                        window.calculateSmartRoute();
+                    });
+
+                    document.getElementById('btnClearRoutes')?.addEventListener('click', () => {
+                        window.clearRoutePlanner();
+                    });
+
+                    window.setRouteOriginCurrent = function () {
+                        if (!navigator.geolocation) {
+                            alert('Geolocation is not supported by your browser.');
+                            return;
+                        }
+                        navigator.geolocation.getCurrentPosition(position => {
+                            const lat = position.coords.latitude;
+                            const lng = position.coords.longitude;
+                            routePlannerOrigin = { lat, lng };
+                            
+                            document.getElementById('routeOriginCoords').value = `${lat.toFixed(5)}, ${lng.toFixed(5)}`;
+                            
+                            // Draw origin marker
+                            if (routePlannerOriginMarker) leafMap.removeLayer(routePlannerOriginMarker);
+                            routePlannerOriginMarker = L.marker([lat, lng], {
+                                icon: L.divIcon({
+                                    className: 'route-origin-pin',
+                                    html: `<div style="background:#58a6ff; width:12px; height:12px; border-radius:50%; border:2px solid #fff; box-shadow:0 0 6px rgba(0,0,0,0.5);"></div>`,
+                                    iconSize: [12, 12],
+                                    iconAnchor: [6, 6]
+                                })
+                            }).addTo(leafMap).bindTooltip('Origin Point');
+                        }, () => {
+                            alert('Could not get your current location.');
+                        });
+                    };
+
+                    window.pickRoutePoint = function (type) {
+                        cancelPickingPoint();
+                        pickingPointType = type;
+                        
+                        // Change cursor to crosshair
+                        const mapContainer = leafMap.getContainer();
+                        mapContainer.style.cursor = 'crosshair';
+                        
+                        const coordsInput = document.getElementById(type === 'origin' ? 'routeOriginCoords' : 'routeDestCoords');
+                        coordsInput.placeholder = "Click on map to select...";
+                        
+                        mapClickHandler = function (e) {
+                            const { lat, lng } = e.latlng;
+                            
+                            if (pickingPointType === 'origin') {
+                                routePlannerOrigin = { lat, lng };
+                                document.getElementById('routeOriginCoords').value = `${lat.toFixed(5)}, ${lng.toFixed(5)}`;
+                                
+                                if (routePlannerOriginMarker) leafMap.removeLayer(routePlannerOriginMarker);
+                                routePlannerOriginMarker = L.marker([lat, lng], {
+                                    icon: L.divIcon({
+                                        className: 'route-origin-pin',
+                                        html: `<div style="background:#58a6ff; width:12px; height:12px; border-radius:50%; border:2px solid #fff; box-shadow:0 0 6px rgba(0,0,0,0.5);"></div>`,
+                                        iconSize: [12, 12],
+                                        iconAnchor: [6, 6]
+                                    })
+                                }).addTo(leafMap).bindTooltip('Origin Point');
+                            } else {
+                                routePlannerDest = { lat, lng };
+                                document.getElementById('routeDestCoords').value = `${lat.toFixed(5)}, ${lng.toFixed(5)}`;
+                                
+                                if (routePlannerDestMarker) leafMap.removeLayer(routePlannerDestMarker);
+                                routePlannerDestMarker = L.marker([lat, lng], {
+                                    icon: L.divIcon({
+                                        className: 'route-dest-pin',
+                                        html: `<div style="background:#f85149; width:12px; height:12px; border-radius:50%; border:2px solid #fff; box-shadow:0 0 6px rgba(0,0,0,0.5);"></div>`,
+                                        iconSize: [12, 12],
+                                        iconAnchor: [6, 6]
+                                    })
+                                }).addTo(leafMap).bindTooltip('Destination Point');
+                            }
+                            
+                            cancelPickingPoint();
+                        };
+                        
+                        leafMap.on('click', mapClickHandler);
+                    };
+
+                    function cancelPickingPoint() {
+                        if (mapClickHandler) {
+                            leafMap.off('click', mapClickHandler);
+                            mapClickHandler = null;
+                        }
+                        const mapContainer = leafMap.getContainer();
+                        mapContainer.style.cursor = '';
+                        pickingPointType = null;
+                    }
+
+                    window.calculateSmartRoute = async function () {
+                        if (!routePlannerOrigin || !routePlannerDest) {
+                            alert('Please select both Origin and Destination points on the map.');
+                            return;
+                        }
+                        
+                        const loading = document.getElementById('routePlannerLoading');
+                        const resultsContainer = document.getElementById('routeResultsContainer');
+                        const clearBtn = document.getElementById('btnClearRoutes');
+                        
+                        loading.style.display = 'flex';
+                        resultsContainer.innerHTML = '';
+                        clearBtn.style.display = 'none';
+                        
+                        // Clear previous route layers
+                        if (routePlannerLayers) {
+                            routePlannerLayers.forEach(layer => leafMap.removeLayer(layer));
+                        }
+                        routePlannerLayers = [];
+                        
+                        const url = `/api/route_planner?origin_lat=${routePlannerOrigin.lat}&origin_lng=${routePlannerOrigin.lng}&dest_lat=${routePlannerDest.lat}&dest_lng=${routePlannerDest.lng}`;
+                        
+                        try {
+                            const res = await fetch(url);
+                            if (!res.ok) throw new Error('API routing failed');
+                            const data = await res.json();
+                            
+                            if (!data.success || !data.result || data.result.segments.length === 0) {
+                                throw new Error(data.error || 'No route could be found');
+                            }
+                            
+                            const result = data.result;
+                            const segments = result.segments;
+                            
+                            // Draw route segment-by-segment on map
+                            segments.forEach(segment => {
+                                const polyline = L.polyline(segment.coords, {
+                                    color: segment.color,
+                                    weight: segment.weight,
+                                    opacity: 0.85,
+                                    lineJoin: 'round'
+                                }).addTo(leafMap);
+                                
+                                const tooltipText = `Speed: ${segment.speed} km/h<br>Status: ${segment.status}<br>Dist: ${segment.length_m} m`;
+                                polyline.bindTooltip(tooltipText, { sticky: true });
+                                
+                                routePlannerLayers.push(polyline);
+                            });
+                            
+                            // Zoom map to fit the route
+                            if (routePlannerLayers.length > 0) {
+                                const bounds = L.latLngBounds();
+                                routePlannerLayers.forEach(l => bounds.extend(l.getBounds()));
+                                leafMap.fitBounds(bounds, { padding: [50, 50], animate: true });
+                            }
+                            
+                            // Render result stats card
+                            resultsContainer.innerHTML = `
+                                <div class="drawer-card" style="padding: 12px; background: rgba(35, 134, 54, 0.08); border: 1px solid var(--success-green); border-radius: 6px; box-sizing: border-box; width: 100%;">
+                                    <div style="font-weight: 700; color: #3fb950; margin-bottom: 6px; font-size: 13px;">✅ Optimum Route Found</div>
+                                    <div style="font-size: 12px; display: grid; grid-template-columns: 1fr 1fr; gap: 8px;">
+                                        <div><strong>📏 Distance:</strong> ${result.total_distance_km} km</div>
+                                        <div><strong>⏱️ Duration:</strong> ${result.total_duration_min} mins</div>
+                                    </div>
+                                    <div style="font-size: 10px; color: var(--text-muted); margin-top: 6px; border-top: 1px dashed var(--border-color); padding-top: 4px;">
+                                        💡 Route automatically avoids barricades and active traffic bottlenecks.
+                                    </div>
+                                </div>
+                            `;
+                            
+                            clearBtn.style.display = 'block';
+                        } catch (err) {
+                            console.error('[Route Planner Error]:', err);
+                            resultsContainer.innerHTML = `
+                                <div class="drawer-card" style="padding: 12px; background: rgba(248,81,73,0.1); border: 1px solid var(--live-red); border-radius: 6px; color: #f85149; font-size: 12px; box-sizing: border-box; width: 100%;">
+                                    ⚠️ <strong>Routing Error:</strong> ${err.message || 'Unable to resolve path between nodes.'}
+                                </div>
+                            `;
+                        } finally {
+                            loading.style.display = 'none';
+                        }
+                    };
+
+                    window.clearRoutePlanner = function () {
+                        if (routePlannerOriginMarker) { leafMap.removeLayer(routePlannerOriginMarker); routePlannerOriginMarker = null; }
+                        if (routePlannerDestMarker) { leafMap.removeLayer(routePlannerDestMarker); routePlannerDestMarker = null; }
+                        if (routePlannerLayers) {
+                            routePlannerLayers.forEach(l => leafMap.removeLayer(l));
+                            routePlannerLayers = [];
+                        }
+                        routePlannerOrigin = null;
+                        routePlannerDest = null;
+                        
+                        document.getElementById('routeOriginCoords').value = '';
+                        document.getElementById('routeDestCoords').value = '';
+                        document.getElementById('routeResultsContainer').innerHTML = '';
+                        document.getElementById('btnClearRoutes').style.display = 'none';
+                        cancelPickingPoint();
+                    };
 
                     const DOM = {
                         sidebar: document.getElementById('liveMapSidebar'),
@@ -1258,6 +1544,11 @@
                     function dispatchViewFocus(report) {
                         if (!report) return;
                         selectedReport = report;
+
+                        // Close Route Planner drawer if open
+                        if (typeof window.closeRoutePlanner === 'function') {
+                            window.closeRoutePlanner();
+                        }
 
                         // Clear any previous diversion polylines from map
                         if (diversionRouteLayers) {
@@ -4925,7 +5216,6 @@
             assignments: [],
             policeStations: [],
             routeStatus: [],
-            hotspotsEnabled: false,
             routePlannerActive: false,
             lightTilesActive: true
         };
@@ -5135,15 +5425,12 @@
 
             const btnRoutePlanner = document.getElementById("btnRoutePlanner");
             btnRoutePlanner?.addEventListener("click", () => {
-                appState.routePlannerActive = !appState.routePlannerActive;
-                btnRoutePlanner.classList.toggle("active-mode", appState.routePlannerActive);
-            });
-
-            const btnHotspotsToggle = document.getElementById("btnHotspotsToggle");
-            btnHotspotsToggle?.addEventListener("click", () => {
-                appState.hotspotsEnabled = !appState.hotspotsEnabled;
-                btnHotspotsToggle.textContent = `🔥 Hotspots: ${appState.hotspotsEnabled ? 'ON' : 'OFF'}`;
-                btnHotspotsToggle.classList.toggle("active-mode", appState.hotspotsEnabled);
+                if (typeof window.toggleRoutePlanner === 'function') {
+                    window.toggleRoutePlanner();
+                } else {
+                    appState.routePlannerActive = !appState.routePlannerActive;
+                    btnRoutePlanner.classList.toggle("active-mode", appState.routePlannerActive);
+                }
             });
 
             const tileToggle = document.getElementById("tileToggle");

@@ -163,6 +163,154 @@ def shortest_path(G, source, destination, active_incidents=None):
     return route_coords
 
 
+def shortest_path_with_traffic(G, source, destination, active_incidents=None):
+    """
+    Calculates the shortest/optimum path between source and destination using OSMnx,
+    penalizing edges near active incidents and returning segments styled with traffic colors.
+    """
+    from pyproj import CRS
+    crs = G.graph.get("crs")
+    is_proj = CRS.from_user_input(crs).is_projected if crs else False
+
+    if is_proj:
+        G_gps = ox.project_graph(G, to_latlong=True)
+    else:
+        G_gps = G
+
+    G_temp = G_gps.copy()
+    
+    # Track which edges are penalized
+    penalized_edges = {}
+    
+    if active_incidents:
+        import math
+        for incident in active_incidents:
+            lat = incident.get("lat") or incident.get("mean_lat")
+            lng = incident.get("lng") or incident.get("mean_lng") or incident.get("long")
+            if lat is None or lng is None:
+                continue
+            
+            try:
+                lat_val = float(lat)
+                lng_val = float(lng)
+            except (ValueError, TypeError):
+                continue
+                
+            is_barricaded = incident.get("barricaded") == 1 or incident.get("barricaded") is True
+            penalty = 5000.0 if is_barricaded else 20.0
+            
+            for u, v, k, data in G_temp.edges(keys=True, data=True):
+                node_u = G_temp.nodes[u]
+                edge_lat = node_u.get('y')
+                edge_lng = node_u.get('x')
+                if edge_lat and edge_lng:
+                    dist = math.sqrt((edge_lat - lat_val)**2 + (edge_lng - lng_val)**2)
+                    if dist < 0.004:  # ~400 meters
+                        data["length"] = data.get("length", 1.0) * penalty
+                        edge_key = (u, v, k)
+                        if edge_key not in penalized_edges or penalty > penalized_edges[edge_key]:
+                            penalized_edges[edge_key] = penalty
+
+    start_node = ox.distance.nearest_nodes(G_temp, source[1], source[0])
+    end_node = ox.distance.nearest_nodes(G_temp, destination[1], destination[0])
+
+    try:
+        route = nx.shortest_path(G_temp, source=start_node, target=end_node, weight="length")
+    except nx.NetworkXNoPath:
+        return {
+            "segments": [],
+            "total_distance_km": 0.0,
+            "total_duration_min": 0.0
+        }
+    except Exception as e:
+        print(f"[routing error]: {e}")
+        return {
+            "segments": [],
+            "total_distance_km": 0.0,
+            "total_duration_min": 0.0
+        }
+
+    segments = []
+    total_distance_m = 0
+    total_duration_s = 0
+
+    for i in range(len(route) - 1):
+        u = route[i]
+        v = route[i+1]
+        
+        edge_data = G_temp[u][v]
+        if isinstance(edge_data, dict):
+            if 0 in edge_data:
+                data = edge_data[0]
+                k = 0
+            else:
+                k = list(edge_data.keys())[0]
+                data = edge_data[k]
+        else:
+            data = edge_data
+            k = 0
+
+        segment_coords = []
+        if "geometry" in data:
+            coords_x_y = list(data["geometry"].coords)
+            for x, y in coords_x_y:
+                segment_coords.append([y, x])
+        else:
+            node_u = G_temp.nodes[u]
+            node_v = G_temp.nodes[v]
+            segment_coords = [[node_u['y'], node_u['x']], [node_v['y'], node_v['x']]]
+
+        length = data.get("length", 100.0)
+        
+        speed_kph = data.get("speed_kph", 40.0)
+        if isinstance(speed_kph, list):
+            speed_kph = speed_kph[0]
+        try:
+            speed_kph = float(speed_kph)
+        except (ValueError, TypeError):
+            speed_kph = 40.0
+
+        penalty = penalized_edges.get((u, v, k), 1.0)
+        if penalty >= 5000.0:
+            color = "#a81111"  # Dark Red
+            weight = 6.5
+            speed = 2.0
+            status = "Road Blocked"
+        elif penalty >= 20.0:
+            color = "#cc8400"  # Dark Yellow/Orange
+            weight = 5
+            speed = 10.0
+            status = "Heavy Traffic"
+        else:
+            color = "#136327"  # Dark Green
+            weight = 4
+            speed = speed_kph
+            status = "Free Flow"
+
+        original_length = length / penalty if penalty > 1.0 else length
+        duration = original_length / (speed / 3.6)
+
+        total_distance_m += original_length
+        total_duration_s += duration
+
+        segments.append({
+            "coords": segment_coords,
+            "color": color,
+            "weight": weight,
+            "speed": round(speed, 1),
+            "status": status,
+            "length_m": round(original_length, 1),
+            "duration_s": round(duration, 1)
+        })
+
+    return {
+        "segments": segments,
+        "total_distance_km": round(total_distance_m / 1000.0, 2),
+        "total_duration_min": round(total_duration_s / 60.0, 1)
+    }
+
+
+
 
 if __name__ == "__main__":
     # source and destination as (lat, lng)
