@@ -8,6 +8,7 @@ import sys
 import requests
 import polyline
 import numpy as np
+import pandas as pd
 from datetime import datetime
 from .model_loader import TrafficModelLoader
 from .llm_agent import parse_traffic_description
@@ -123,39 +124,112 @@ class DispatchPlanner:
         
         # Phase 3: Prepare features for ML model prediction
         try:
-            severity = llm_insights.get("severity_multiplier", 1.0)
+            severity_multiplier = llm_insights.get("severity_multiplier", 1.0)
             
-            # Encode categorical features
-            cause_encoded = loader.encoder_cause.transform([event_cause])[0] if event_cause in loader.encoder_cause.classes_ else 0
-            priority_encoded = loader.encoder_priority.transform([priority])[0] if priority in loader.encoder_priority.classes_ else 1
+            # Resolve spatial embeddings and historical parameters exactly matching backend/model.py
+            # Compute distances using vectorized haversine formula
+            lat_arr = loader.df_nodes['latitude'].values
+            lng_arr = loader.df_nodes['longitude'].values
             
-            # Get spatial embeddings (use average if missing)
-            spatial_emb_cols = [col for col in loader.df_nodes.columns if 'spatial_emb' in col]
-            node_embeddings = closest_node[spatial_emb_cols].values if len(spatial_emb_cols) > 0 else list(loader.avg_embeddings.values())
-            node_embeddings = np.array(node_embeddings, dtype=float)
+            dlat = np.radians(lat_arr - latitude)
+            dlon = np.radians(lng_arr - longitude)
+            a = np.sin(dlat/2)**2 + np.cos(np.radians(latitude)) * np.cos(np.radians(lat_arr)) * np.sin(dlon/2)**2
+            distances = 6371000.0 * 2.0 * np.arcsin(np.sqrt(a))
             
-            # Prepare prediction features
-            # Assuming model expects: [cause_encoded, priority_encoded, severity, ...spatial_embeddings, distance, hour]
+            nearest_idx = np.argmin(distances)
+            nearest_distance = float(distances[nearest_idx])
+            
+            spatial_cols = [f"spatial_emb_{i}" for i in range(16)]
+            global_avg_emb = np.array([loader.avg_embeddings.get(col, 0.0) for col in spatial_cols])
+            
+            avg_hist_count = float(loader.df_nodes['historical_incident_count'].mean()) if 'historical_incident_count' in loader.df_nodes.columns else 0.0
+            avg_hist_duration = float(loader.df_nodes['historical_median_duration'].mean()) if 'historical_median_duration' in loader.df_nodes.columns else 0.0
+            
+            if nearest_distance <= 500.0:
+                nearest_row = loader.df_nodes.iloc[nearest_idx]
+                emb = nearest_row[spatial_cols].values.astype(float)
+                hist_count = float(nearest_row['historical_incident_count']) if 'historical_incident_count' in nearest_row and not pd.isna(nearest_row['historical_incident_count']) else avg_hist_count
+                hist_duration = float(nearest_row['historical_median_duration']) if 'historical_median_duration' in nearest_row and not pd.isna(nearest_row['historical_median_duration']) else avg_hist_duration
+                
+                # If NaN, fallback
+                if np.isnan(emb).any():
+                    emb = np.where(np.isnan(emb), global_avg_emb, emb)
+                if np.isnan(hist_count):
+                    hist_count = avg_hist_count
+                if np.isnan(hist_duration):
+                    hist_duration = avg_hist_duration
+            else:
+                # Proximity average
+                nearby_mask = distances <= 1000.0
+                nearby = loader.df_nodes[nearby_mask]
+                
+                if len(nearby) >= 1:
+                    emb = nearby[spatial_cols].mean().values.astype(float)
+                    hist_count = float(nearby['historical_incident_count'].mean()) if 'historical_incident_count' in nearby.columns and not pd.isna(nearby['historical_incident_count'].mean()) else avg_hist_count
+                    hist_duration = float(nearby['historical_median_duration'].mean()) if 'historical_median_duration' in nearby.columns and not pd.isna(nearby['historical_median_duration'].mean()) else avg_hist_duration
+                    
+                    if np.isnan(emb).any():
+                        emb = np.where(np.isnan(emb), global_avg_emb, emb)
+                    if np.isnan(hist_count):
+                        hist_count = avg_hist_count
+                    if np.isnan(hist_duration):
+                        hist_duration = avg_hist_duration
+                else:
+                    emb = global_avg_emb
+                    hist_count = avg_hist_count
+                    hist_duration = avg_hist_duration
+
+            # Categorical encoding matching model.py
+            if event_cause in loader.encoder_cause.classes_:
+                cause_encoded = loader.encoder_cause.transform([event_cause])[0]
+            elif 'others' in loader.encoder_cause.classes_:
+                cause_encoded = loader.encoder_cause.transform(['others'])[0]
+            else:
+                cause_encoded = 0
+
+            if priority in loader.encoder_priority.classes_:
+                priority_encoded = loader.encoder_priority.transform([priority])[0]
+            elif 'Low' in loader.encoder_priority.classes_:
+                priority_encoded = loader.encoder_priority.transform(['Low'])[0]
+            elif 'LOW' in loader.encoder_priority.classes_:
+                priority_encoded = loader.encoder_priority.transform(['LOW'])[0]
+            else:
+                priority_encoded = 1
+                
             hour = datetime.now().hour
-            features = np.concatenate([
-                [cause_encoded, priority_encoded, severity, distance_meters/1000, hour],
-                node_embeddings
-            ]).reshape(1, -1)
+            
+            # 21-element feature vector in exact order:
+            # [cause_enc, priority_enc, hour_of_day, spatial_embeddings (16 elements), historical_incident_count, historical_median_duration]
+            features = np.array([
+                cause_encoded,
+                priority_encoded,
+                hour,
+                emb[0], emb[1], emb[2], emb[3], emb[4], emb[5], emb[6], emb[7],
+                emb[8], emb[9], emb[10], emb[11], emb[12], emb[13], emb[14], emb[15],
+                hist_count,
+                hist_duration
+            ], dtype=float).reshape(1, 21)
             
             # Phase 3.5: Get model prediction
             try:
                 traffic_pred = loader.ai_model.predict(features)[0]
-                traffic_pred = max(0, min(100, float(traffic_pred)))  # Clamp to 0-100
+                traffic_pred = max(10.0, float(traffic_pred))  # Clamp to min 10 mins
             except Exception as e:
                 logger.warning(f"Model prediction failed: {e}, using default")
-                traffic_pred = 50 + severity * 10
+                traffic_pred = 30.0 + severity_multiplier * 15.0
                 
         except Exception as e:
             logger.error(f"Feature preparation failed: {e}")
-            traffic_pred = 50
+            traffic_pred = 30.0
+            severity_multiplier = 1.0
         
         # Phase 4: Calculate routing and detour
         detour_info = DispatchPlanner.calculate_detour(latitude, longitude)
+        
+        # Calculate resources dynamically based on predicted jam duration
+        jam_length_km = round(traffic_pred * severity_multiplier * 0.05, 2)
+        constables = max(1, min(int(np.ceil(jam_length_km * 3)), 20))
+        barricades = max(0, min(int(np.ceil(jam_length_km * 2)), 10))
         
         # Phase 5: Compile dispatch plan
         dispatch_plan = {
@@ -178,13 +252,16 @@ class DispatchPlanner:
             },
             "traffic_prediction": {
                 "predicted_congestion_level": round(traffic_pred, 2),
+                "predicted_clearance_time_minutes": round(traffic_pred, 1),
                 "congestion_category": DispatchPlanner._categorize_congestion(traffic_pred),
-                "severity_multiplier": severity
+                "severity_multiplier": severity_multiplier
             },
             "routing": detour_info,
             "resource_allocation": {
-                "constables_needed": max(1, int(llm_insights.get("severity_multiplier", 1.0) * 2)),
-                "barricades_needed": max(0, int(llm_insights.get("severity_multiplier", 1.0) * 1)),
+                "constables": constables,
+                "barricades": barricades,
+                "constables_needed": constables,
+                "barricades_needed": barricades,
                 "available_resources": DispatchPlanner.CITY_INVENTORY
             }
         }

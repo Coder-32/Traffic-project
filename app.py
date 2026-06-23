@@ -295,7 +295,7 @@ def mappls_route():
     origin = request.args.get("origin")
     destination = request.args.get("destination")
     
-    api_key = "5c995b0d2e2a85de2bc17a9a68301b2d"
+    api_key = "ed8f97377b6c6096f202ea64b8487cd1"
     url = f"https://apis.mappls.com/advancedmaps/v1/{api_key}/route_adv/driving/{origin};{destination}?geometries=geojson&steps=true"
     
     try:
@@ -321,6 +321,25 @@ def toggle_barricade():
             return jsonify({"success": True, "message": msg})
         else:
             return jsonify({"success": False, "error": msg}), 500
+    except Exception as e:
+        return jsonify({"success": False, "error": str(e)}), 500
+
+
+@app.route("/api/reports/resolve/<report_id>", methods=["POST"])
+def resolve_report(report_id):
+    """Resolves an incident report by deleting it from Flask database and notifying FastAPI."""
+    try:
+        success, msg = app.traffic_report_manager.delete_report(report_id)
+        if success:
+            # Also try to resolve it from the FastAPI backend if it exists there
+            try:
+                requests.post(f"{FASTAPI_URL}/incidents/resolve/{report_id}", timeout=2)
+            except Exception as e:
+                print(f"[Backend Sync Warning]: Failed to resolve on FastAPI: {e}")
+                
+            return jsonify({"success": True, "message": msg})
+        else:
+            return jsonify({"success": False, "error": msg}), 404
     except Exception as e:
         return jsonify({"success": False, "error": str(e)}), 500
 

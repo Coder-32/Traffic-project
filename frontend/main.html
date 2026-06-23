@@ -885,6 +885,8 @@
                         <div class="dr-row"><strong>Telemetry ID:</strong> <span id="drAddress"
                                 style="font-family:monospace;">--</span></div>
                         <div class="dr-row"><strong>Timestamp:</strong> <span id="drArea">--</span></div>
+                        <div class="dr-row"><strong>Assigned Hub:</strong> <span id="drAssignedHub" style="color: var(--accent-blue); font-weight: 600;">--</span></div>
+                        <div class="dr-row"><strong>Dispatched Units:</strong> <span id="drDispatchedResources">--</span></div>
                     </div>
 
                     <div class="drawer-card">
@@ -1394,6 +1396,49 @@
                             currentTiles = L.tileLayer(url, { maxZoom: 20 }).addTo(leafMap);
                         };
 
+                        window.resolveLiveIncident = function (reportId) {
+                            if (!confirm(`Are you sure you want to resolve and clear incident ${reportId}?`)) return;
+
+                            fetch(`/api/reports/resolve/${reportId}`, {
+                                method: 'POST'
+                            })
+                            .then(res => res.json())
+                            .then(data => {
+                                if (data.success) {
+                                    alert(`Incident ${reportId} resolved successfully.`);
+                                    
+                                    // Close drawer if open with this report
+                                    const drawer = document.getElementById('incidentDrawer');
+                                    if (drawer && drawer.classList.contains('open')) {
+                                        drawer.classList.remove('open');
+                                    }
+                                    
+                                    // Clean up local appState
+                                    if (window.appState && window.appState.reports) {
+                                        window.appState.reports = window.appState.reports.filter(r => r.id !== reportId);
+                                    }
+                                    
+                                    // Reload main map and other dashboard panels
+                                    if (typeof window.loadInitialDataStack === 'function') {
+                                        window.loadInitialDataStack();
+                                    }
+                                } else {
+                                    alert("Failed to resolve incident: " + (data.error || "Unknown error"));
+                                }
+                            })
+                            .catch(err => {
+                                console.error("[Live Incident Resolve Error]:", err);
+                                alert("Failed to resolve incident. Server connection error.");
+                            });
+                        };
+
+                        const btnDispatch = document.getElementById('btnDispatch');
+                        if (btnDispatch) {
+                            btnDispatch.addEventListener('click', () => {
+                                triggerDispatchUnits();
+                            });
+                        }
+
                         const btnDiv = document.getElementById('btnDiversion');
                         if (btnDiv) {
                             btnDiv.addEventListener('click', () => {
@@ -1465,15 +1510,30 @@
                             let normPriority = String(report.priority).toLowerCase();
                             if (normPriority === 'medium') normPriority = 'mid';
 
+                            const match = (window.appState && window.appState.assignments)
+                                ? window.appState.assignments.find(a => String(a.report_id) === String(report.id))
+                                : null;
+
+                            let predDurationText = '';
+                            if (match && match.predictive_metrics && match.predictive_metrics.predicted_congestion_level) {
+                                predDurationText = `<span style="color:#58a6ff; font-weight:600;">⏱️ AI: ${Math.round(match.predictive_metrics.predicted_congestion_level)}m</span>`;
+                            }
+
                             card.innerHTML = `
                     <div class="card-header-row">
                         <span class="card-loc">${report.location_name || 'Telemetry Cluster'}</span>
                         <span class="priority-pill ${normPriority}">${report.priority || 'LOW'}</span>
                     </div>
                     <div class="card-desc">${report.description}</div>
-                    <div class="card-meta">
+                    <div class="card-meta" style="margin-bottom: 8px;">
                         <span>⚠️ ${report.issue_type}</span>
                         <span>⏱️ ${report.minutes_ago ?? 0}m ago</span>
+                        ${predDurationText}
+                    </div>
+                    <div style="display: flex; justify-content: flex-end; border-top: 1px solid rgba(255,255,255,0.05); padding-top: 8px; margin-top: 4px;">
+                        <button class="dr-action-btn primary" style="font-size: 10px; padding: 4px 8px; margin: 0; background-color: rgba(46, 160, 67, 0.12); border-color: rgba(46, 160, 67, 0.25); color: #3fb950; border-radius: 4px; font-weight: 700; cursor: pointer; transition: background-color 0.2s;" onmouseover="this.style.backgroundColor='rgba(46, 160, 67, 0.22)'" onmouseout="this.style.backgroundColor='rgba(46, 160, 67, 0.12)'" onclick="event.stopPropagation(); window.resolveLiveIncident('${report.id}')">
+                            ✅ Resolve
+                        </button>
                     </div>
                 `;
 
@@ -1513,10 +1573,7 @@
                                 mapItem.bindTooltip(`<b>${report.location_name}</b><br>${report.issue_type}<br><small style="color:${nodeColor}">${report.priority}</small>`, { direction: 'top' });
                                 mapItem.on('click', () => dispatchViewFocus(report));
                                 layerGroupGroup.addLayer(mapItem);
-
-                                // Resolve nearest/assigned police station coordinates as origin
-                                const station = getStationCoordinatesForReport(report);
-                                drawMapplsTrafficRoute(station.lat, station.lng, report.lat, report.lng, report.id);
+                                // Dispatch route will be loaded on selection / dispatch click
                             }
                         });
 
@@ -1556,6 +1613,9 @@
                         }
                         diversionRouteLayers = [];
 
+                        // Clear previous active route layers
+                        clearActiveRouteLayers();
+
                         if (leafMap && report.lat && report.lng) {
                             leafMap.flyTo([report.lat, report.lng], 14, { animate: true, duration: 1 });
                         }
@@ -1575,18 +1635,86 @@
                         document.getElementById('drArea').textContent = report.last_updated;
                         document.getElementById('drDescText').textContent = report.description;
 
-                        // Compute math scale parameters 
-                        const upPrio = String(report.priority).toUpperCase();
-                        let weightValue = 0.25;
-                        if (upPrio === 'HIGH') weightValue = 0.90;
-                        else if (upPrio === 'MID' || upPrio === 'MEDIUM') weightValue = 0.55;
+                        const match = (window.appState && window.appState.assignments)
+                            ? window.appState.assignments.find(a => String(a.report_id) === String(report.id))
+                            : null;
 
-                        document.getElementById('drPredDuration').textContent = Math.round(weightValue * 55 + 15) + " mins";
-                        document.getElementById('drSevScore').textContent = weightValue.toFixed(2) + " / 1.0";
+                        const station = getStationCoordinatesForReport(report);
+                        
+                        // Automatically draw dispatch route from nearest center on selection
+                        drawMapplsTrafficRoute(station.lat, station.lng, report.lat, report.lng, report.id);
+
+                        const hubSpan = document.getElementById('drAssignedHub');
+                        const resourcesSpan = document.getElementById('drDispatchedResources');
+
+                        let stationName = "Unknown Hub";
+                        if (match && match.assignment) {
+                            stationName = match.assignment.station_name;
+                        } else if (window.appState && window.appState.policeStations) {
+                            const found = window.appState.policeStations.find(s => {
+                                const sLat = s.lat || s.latitude;
+                                const sLng = s.lng || s.longitude || s.lon;
+                                return sLat === station.lat && sLng === station.lng;
+                            });
+                            if (found) stationName = found.station_name;
+                        }
+
+                        if (hubSpan) hubSpan.textContent = stationName;
+
+                        if (resourcesSpan) {
+                            const resources = (match && match.scheduling) ? match.scheduling.allocated_resources : null;
+                            if (resources) {
+                                const badges = Object.entries(resources)
+                                    .filter(([name]) => name !== 'available_resources' && name !== 'constables_needed' && name !== 'barricades_needed')
+                                    .map(([name, qty]) => {
+                                        let displayName = name;
+                                        if (name === 'constables') displayName = 'Constables';
+                                        if (name === 'barricades') displayName = 'Barricades';
+                                        return `${displayName}: ${qty}`;
+                                    });
+                                resourcesSpan.textContent = badges.length > 0 ? badges.join(', ') : "None allocated";
+                            } else {
+                                // Dynamic allocation fallback based on priority
+                                const priority = String(report.priority).toUpperCase();
+                                let constables = 2;
+                                let barricades = 1;
+                                if (priority === 'HIGH' || priority === 'CRITICAL') {
+                                    constables = 5;
+                                    barricades = 3;
+                                } else if (priority === 'LOW') {
+                                    constables = 1;
+                                    barricades = 0;
+                                }
+                                resourcesSpan.textContent = `Constables: ${constables}, Barricades: ${barricades} (Dynamic)`;
+                            }
+                        }
+
+                        let durationVal = "";
+                        let severityScoreVal = "";
+                        let severityPct = 0;
+
+                        if (match && match.predictive_metrics) {
+                            const congestion = match.predictive_metrics.predicted_congestion_level || 0;
+                            durationVal = Math.round(congestion) + " mins (NGBoost)";
+                            severityScoreVal = (congestion / 100).toFixed(2) + " / 1.0";
+                            severityPct = Math.round(congestion);
+                        } else {
+                            const upPrio = String(report.priority).toUpperCase();
+                            let weightValue = 0.25;
+                            if (upPrio === 'HIGH') weightValue = 0.90;
+                            else if (upPrio === 'MID' || upPrio === 'MEDIUM') weightValue = 0.55;
+
+                            durationVal = Math.round(weightValue * 55 + 15) + " mins";
+                            severityScoreVal = weightValue.toFixed(2) + " / 1.0";
+                            severityPct = Math.round(weightValue * 100);
+                        }
+
+                        document.getElementById('drPredDuration').textContent = durationVal;
+                        document.getElementById('drSevScore').textContent = severityScoreVal;
 
                         const progressBar = document.getElementById('drSevBar');
                         if (progressBar) {
-                            progressBar.style.width = (weightValue * 100) + "%";
+                            progressBar.style.width = severityPct + "%";
                             progressBar.style.backgroundColor = getPriorityColor(report.priority);
                         }
 
@@ -1857,6 +1985,59 @@
                             `;
                             drList.appendChild(item);
                         });
+                    }
+
+                    function clearActiveRouteLayers() {
+                        if (activeRouteLayers) {
+                            activeRouteLayers.forEach(l => {
+                                if (leafMap && leafMap.hasLayer(l)) {
+                                    leafMap.removeLayer(l);
+                                }
+                            });
+                        }
+                        activeRouteLayers = [];
+                    }
+
+                    function triggerDispatchUnits() {
+                        if (!selectedReport) {
+                            alert("Please select an incident first.");
+                            return;
+                        }
+                        const station = getStationCoordinatesForReport(selectedReport);
+                        
+                        // Resolve station name
+                        let stationName = "Nearest Police Station";
+                        if (window.appState && window.appState.policeStations) {
+                            const found = window.appState.policeStations.find(s => {
+                                const sLat = s.lat || s.latitude;
+                                const sLng = s.lng || s.longitude || s.lon;
+                                return sLat === station.lat && sLng === station.lng;
+                            });
+                            if (found) stationName = found.station_name;
+                        }
+
+                        // Clear existing active route layers
+                        clearActiveRouteLayers();
+
+                        // Draw dispatch route
+                        drawMapplsTrafficRoute(station.lat, station.lng, selectedReport.lat, selectedReport.lng, selectedReport.id);
+
+                        // Midpoint en-route vehicle animation marker
+                        const midLat = (station.lat + selectedReport.lat) / 2;
+                        const midLng = (station.lng + selectedReport.lng) / 2;
+                        
+                        const dispatchVehicle = L.marker([midLat, midLng], {
+                            icon: L.divIcon({
+                                className: '',
+                                html: `<div style="font-size: 24px; filter: drop-shadow(0 0 6px #58a6ff); animation: pulse 1.5s infinite; cursor: pointer;">🚓</div>`,
+                                iconAnchor: [12, 12]
+                            })
+                        }).addTo(leafMap);
+                        
+                        dispatchVehicle.bindTooltip(`<b>Dispatch Unit (En-Route)</b><br>Assigned Center: ${stationName}<br>Status: Navigating real-time segments`, { direction: 'top' });
+                        activeRouteLayers.push(dispatchVehicle);
+
+                        alert(`🚨 Dispatch Alert: Units have been successfully dispatched from ${stationName} to manage the incident at ${selectedReport.location_name}!`);
                     }
 
                     function triggerDiversionRoute() {
@@ -2339,13 +2520,20 @@
 
             <div class="fc-layout-wrapper">
                 <div class="fc-news-sidebar">
-                    <div class="fc-sidebar-header">
-                        <span style="font-size: 13px; font-weight: 600; color: var(--text-primary);">Active News
-                            Feed</span>
-                        <button id="btnRefreshFcNews"
-                            style="background: none; border: none; color: var(--accent-blue); cursor: pointer; font-size: 12px;">
-                            🔄 Sync
-                        </button>
+                    <div class="fc-sidebar-header" style="flex-direction: column; align-items: flex-start; gap: 8px;">
+                        <div style="display: flex; justify-content: space-between; width: 100%; align-items: center;">
+                            <span style="font-size: 13px; font-weight: 600; color: var(--text-primary);">Active News Feed</span>
+                            <button id="btnRefreshFcNews"
+                                style="background: none; border: none; color: var(--accent-blue); cursor: pointer; font-size: 12px; font-weight: 600;">
+                                🔄 Sync
+                            </button>
+                        </div>
+                        <div style="display: flex; align-items: center; gap: 8px; width: 100%; padding-top: 4px; border-top: 1px solid rgba(255,255,255,0.05);">
+                            <label class="fc-toggle-label" style="display: flex; align-items: center; gap: 6px; cursor: pointer; font-size: 11px; color: var(--text-muted); width: 100%; user-select: none;">
+                                <input type="checkbox" id="chkBangaloreOnly" style="accent-color: var(--accent-blue); cursor: pointer; width: 14px; height: 14px; margin: 0;">
+                                <span>📍 Bangalore Oriented Only</span>
+                            </label>
+                        </div>
                     </div>
                     <div id="fcNewsListContainer" class="fc-news-list">
                         <div style="color: var(--text-muted); font-size: 12px; text-align: center; padding: 20px;">
@@ -2512,39 +2700,75 @@
                             const newsItems = data.active_news || [];
                             loadedNewsCache = newsItems;
 
-                            if (newsItems.length === 0) {
-                                container.innerHTML = `<div style="color:var(--text-muted); font-size:12px; text-align:center; padding:20px;">No active incident reports located.</div>`;
-                                return;
-                            }
-
-                            container.innerHTML = "";
-                            newsItems.forEach(item => {
-                                const card = document.createElement("div");
-                                card.className = "fc-news-card";
-                                card.setAttribute("data-news-id", item.id);
-
-                                const priority = (item.priority || "LOW").toUpperCase();
-                                const pColor = priority === 'CRITICAL' || priority === 'HIGH' ? 'var(--live-red)' : (priority === 'MID' || priority === 'MEDIUM' ? '#e3b341' : 'var(--text-muted)');
-
-                                card.innerHTML = `
-                                    <div class="fc-card-meta">
-                                        <span style="font-weight:600; color: ${pColor}">${priority}</span>
-                                        <span>${(item.event_cause || item.issue_type || 'INCIDENT').replace(/_/g, ' ')}</span>
-                                    </div>
-                                    <div class="fc-card-title">${item.description || 'No descriptive context payload.'}</div>
-                                    <div style="font-size:10px; color:var(--text-muted); margin-top:6px; text-align:right;">
-                                        ${item.junction || item.location_name || 'General Route'}
-                                    </div>
-                                `;
-
-                                card.addEventListener("click", () => handleNewsItemSelection(item, card));
-                                container.appendChild(card);
-                            });
+                            renderForecastNewsList();
 
                         } catch (err) {
                             console.error("Forecast View Sync Error:", err);
                             container.innerHTML = `<div style="color:var(--live-red); font-size:12px; text-align:center; padding:20px;">Sync Tracking Fault</div>`;
                         }
+                    }
+
+                    function renderForecastNewsList() {
+                        const container = document.getElementById("fcNewsListContainer");
+                        if (!container) return;
+
+                        const isBangaloreOnly = document.getElementById("chkBangaloreOnly")?.checked || false;
+
+                        let itemsToRender = loadedNewsCache;
+                        if (isBangaloreOnly) {
+                            itemsToRender = loadedNewsCache.filter(item => {
+                                // 1. Check coordinates (Bangalore bounds)
+                                const lat = parseFloat(item.lat || item.latitude);
+                                const lng = parseFloat(item.lng || item.longitude);
+                                if (!isNaN(lat) && !isNaN(lng)) {
+                                    if (lat >= 12.7 && lat <= 13.2 && lng >= 77.3 && lng <= 77.9) {
+                                        return true;
+                                    }
+                                }
+
+                                // 2. Check location name / description text keywords
+                                const textToCheck = `${item.location_name || ''} ${item.junction || ''} ${item.description || ''}`.toLowerCase();
+                                const bangaloreKeywords = [
+                                    "bangalore", "bengaluru", "silk board", "hebbal", "kr puram", "tin factory",
+                                    "marathahalli", "sony world", "adugodi", "devarabeesanahalli", "manipal",
+                                    "hal gate", "mekhri", "yeshwanthpur", "goraguntepalya", "nayandahalli",
+                                    "mysore road", "banashankari", "jayanagar", "lalbagh", "richmond",
+                                    "mg road", "trinity", "domlur", "bellandur", "electronic city", "attibele",
+                                    "whitefield", "itpl", "kundalahalli"
+                                ];
+                                
+                                return bangaloreKeywords.some(keyword => textToCheck.includes(keyword));
+                            });
+                        }
+
+                        if (itemsToRender.length === 0) {
+                            container.innerHTML = `<div style="color:var(--text-muted); font-size:12px; text-align:center; padding:20px;">No matching incident reports located.</div>`;
+                            return;
+                        }
+
+                        container.innerHTML = "";
+                        itemsToRender.forEach(item => {
+                            const card = document.createElement("div");
+                            card.className = "fc-news-card";
+                            card.setAttribute("data-news-id", item.id);
+
+                            const priority = (item.priority || "LOW").toUpperCase();
+                            const pColor = priority === 'CRITICAL' || priority === 'HIGH' ? 'var(--live-red)' : (priority === 'MID' || priority === 'MEDIUM' ? '#e3b341' : 'var(--text-muted)');
+
+                            card.innerHTML = `
+                                <div class="fc-card-meta">
+                                    <span style="font-weight:600; color: ${pColor}">${priority}</span>
+                                    <span>${(item.event_cause || item.issue_type || 'INCIDENT').replace(/_/g, ' ')}</span>
+                                </div>
+                                <div class="fc-card-title">${item.description || 'No descriptive context payload.'}</div>
+                                <div style="font-size:10px; color:var(--text-muted); margin-top:6px; text-align:right;">
+                                    ${item.junction || item.location_name || 'General Route'}
+                                </div>
+                            `;
+
+                            card.addEventListener("click", () => handleNewsItemSelection(item, card));
+                            container.appendChild(card);
+                        });
                     }
 
                     async function handleNewsItemSelection(newsItem, cardElement) {
@@ -2645,6 +2869,7 @@
 
                     function setupEventWiring() {
                         document.getElementById("btnRefreshFcNews")?.addEventListener("click", pullSidebarNewsFeed);
+                        document.getElementById("chkBangaloreOnly")?.addEventListener("change", renderForecastNewsList);
 
                         const nativeSwitchTab = window.switchTab;
                         window.switchTab = function (tabId) {
@@ -2913,6 +3138,14 @@
                     flex-wrap: wrap;
                     gap: 12px;
                 }
+                @keyframes spin {
+                    from { transform: rotate(0deg); }
+                    to { transform: rotate(360deg); }
+                }
+                .spin-icon {
+                    display: inline-block;
+                    animation: spin 1s linear infinite;
+                }
             </style>
 
             <div class="analytics-header-row" style="display: flex; justify-content: space-between; align-items: center; border-bottom: 1px solid var(--border-color); padding-bottom: 14px; margin-bottom: 20px;">
@@ -2922,8 +3155,8 @@
                     <p style="margin: 0; color: var(--text-muted); font-size: 12px;">Aggregated metrics, historical
                         insight modeling, and field deployment multipliers.</p>
                 </div>
-                <button id="btnReloadAnalytics" class="toggle-btn" style="cursor: pointer; background: var(--panel-bg-hover); border: 1px solid var(--border-color); color: var(--text-primary); padding: 6px 12px; border-radius: 4px;">
-                    🔄 Sync Engine
+                <button id="btnReloadAnalytics" class="toggle-btn" style="display: flex; align-items: center; gap: 6px; cursor: pointer; background: var(--panel-bg-hover); border: 1px solid var(--border-color); color: var(--text-primary); padding: 6px 12px; border-radius: 4px;">
+                    <span class="sync-emoji">🔄</span> Sync Engine
                 </button>
             </div>
 
@@ -3086,6 +3319,26 @@
                         }
                     };
 
+                    function countUp(el, endVal, suffix, duration) {
+                        if (!el) return;
+                        const startVal = parseFloat(el.dataset.rawVal || '0') || 0;
+                        el.dataset.rawVal = String(endVal);
+                        if (startVal === endVal) { el.textContent = endVal + suffix; return; }
+                        const stepTime = 16;
+                        const steps = Math.max(1, Math.round(duration / stepTime));
+                        let step = 0;
+                        const diff = endVal - startVal;
+                        const timer = setInterval(() => {
+                            step++;
+                            const current = startVal + diff * (step / steps);
+                            el.textContent = (Number.isInteger(endVal) ? Math.round(current) : current.toFixed(1)) + suffix;
+                            if (step >= steps) {
+                                clearInterval(timer);
+                                el.textContent = endVal + suffix;
+                            }
+                        }, stepTime);
+                    }
+
                     async function pullAnalysisDataPayload() {
                         console.log("[Analytics]: Loading charts and KPIs...");
                         try {
@@ -3101,9 +3354,9 @@
                             ]);
 
                             if (summaryRes) {
-                                document.getElementById('anKpiTotal').textContent = summaryRes.total_incidents_month ?? 0;
+                                countUp(document.getElementById('anKpiTotal'), summaryRes.total_incidents_month ?? 0, '', 600);
                                 document.getElementById('anKpiTotalSub').textContent = `Resolved: ${summaryRes.total_resolved ?? 0} · Active: ${summaryRes.total_active ?? 0}`;
-                                document.getElementById('anKpiAccVal').textContent = `${parseFloat(summaryRes.avg_predicted_duration ?? 0).toFixed(1)} mins`;
+                                countUp(document.getElementById('anKpiAccVal'), parseFloat((summaryRes.avg_predicted_duration ?? 0).toFixed(1)), ' mins', 600);
                                 document.getElementById('anKpiAccSub').textContent = `Mean Severity: ${parseFloat(summaryRes.avg_severity_multiplier ?? 1.0).toFixed(2)}x`;
                                 document.getElementById('anKpiJunction').textContent = summaryRes.most_affected_junction || 'None';
                                 document.getElementById('anKpiHour').textContent = `${String(summaryRes.peak_hour ?? 0).padStart(2, '0')}:00`;
@@ -3122,147 +3375,166 @@
                     function drawCauseChart(data) {
                         const ctx = document.getElementById('canvasCause')?.getContext('2d');
                         if (!ctx) return;
-                        if (causeChart) causeChart.destroy();
 
                         const labels = data.map(c => formatEventCause(c.cause));
                         const counts = data.map(c => c.count);
                         const durations = data.map(c => c.avg_duration_mins);
 
-                        causeChart = new Chart(ctx, {
-                            type: 'bar',
-                            data: {
-                                labels: labels,
-                                datasets: [{
-                                    label: 'Incident Count',
-                                    data: counts,
-                                    backgroundColor: '#58a6ff',
-                                    borderRadius: 4,
-                                    borderWidth: 0,
-                                    barThickness: 16
-                                }]
-                            },
-                            options: {
-                                indexAxis: 'y',
-                                responsive: true,
-                                maintainAspectRatio: false,
-                                plugins: {
-                                    legend: { display: false },
-                                    tooltip: {
-                                        callbacks: {
-                                            label: function(context) {
-                                                const idx = context.dataIndex;
-                                                return `Count: ${context.raw} | Avg Duration: ${durations[idx].toFixed(0)} min`;
+                        if (causeChart) {
+                            causeChart.data.labels = labels;
+                            causeChart.data.datasets[0].data = counts;
+                            causeChart.options.plugins.tooltip.callbacks.label = function(context) {
+                                const idx = context.dataIndex;
+                                return `Count: ${context.raw} | Avg Duration: ${durations[idx].toFixed(0)} min`;
+                            };
+                            causeChart.update();
+                        } else {
+                            causeChart = new Chart(ctx, {
+                                type: 'bar',
+                                data: {
+                                    labels: labels,
+                                    datasets: [{
+                                        label: 'Incident Count',
+                                        data: counts,
+                                        backgroundColor: '#58a6ff',
+                                        borderRadius: 4,
+                                        borderWidth: 0,
+                                        barThickness: 16
+                                    }]
+                                },
+                                options: {
+                                    indexAxis: 'y',
+                                    responsive: true,
+                                    maintainAspectRatio: false,
+                                    plugins: {
+                                        legend: { display: false },
+                                        tooltip: {
+                                            callbacks: {
+                                                label: function(context) {
+                                                    const idx = context.dataIndex;
+                                                    return `Count: ${context.raw} | Avg Duration: ${durations[idx].toFixed(0)} min`;
+                                                }
                                             }
                                         }
-                                    }
-                                },
-                                scales: {
-                                    x: {
-                                        grid: { color: '#30363d' },
-                                        ticks: { color: '#8b949e', font: { size: 10 } }
                                     },
-                                    y: {
-                                        grid: { display: false },
-                                        ticks: { color: '#8b949e', font: { size: 10 } }
+                                    scales: {
+                                        x: {
+                                            grid: { color: '#30363d' },
+                                            ticks: { color: '#8b949e', font: { size: 10 } }
+                                        },
+                                        y: {
+                                            grid: { display: false },
+                                            ticks: { color: '#8b949e', font: { size: 10 } }
+                                        }
                                     }
                                 }
-                            }
-                        });
+                            });
+                        }
                     }
 
                     function drawTimelineChart(data) {
                         const ctx = document.getElementById('canvasDist')?.getContext('2d');
                         if (!ctx) return;
-                        if (timelineChart) timelineChart.destroy();
 
                         const dates = (data.dates || []).map(d => {
                             const dt = new Date(d);
                             return dt.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
                         });
 
-                        timelineChart = new Chart(ctx, {
-                            type: 'line',
-                            data: {
-                                labels: dates,
-                                datasets: [{
-                                    label: 'Daily Incidents',
-                                    data: data.counts || [],
-                                    borderColor: '#238636',
-                                    backgroundColor: 'rgba(35, 134, 54, 0.05)',
-                                    borderWidth: 2,
-                                    fill: true,
-                                    tension: 0.3,
-                                    pointRadius: 2,
-                                    pointBackgroundColor: '#238636'
-                                }]
-                            },
-                            options: {
-                                responsive: true,
-                                maintainAspectRatio: false,
-                                plugins: { legend: { display: false } },
-                                scales: {
-                                    x: {
-                                        grid: { color: '#30363d' },
-                                        ticks: { color: '#8b949e', font: { size: 10 }, maxTicksLimit: 10 }
-                                    },
-                                    y: {
-                                        grid: { color: '#30363d' },
-                                        ticks: { color: '#8b949e', font: { size: 10 } },
-                                        suggestedMin: 0
+                        if (timelineChart) {
+                            timelineChart.data.labels = dates;
+                            timelineChart.data.datasets[0].data = data.counts || [];
+                            timelineChart.update();
+                        } else {
+                            timelineChart = new Chart(ctx, {
+                                type: 'line',
+                                data: {
+                                    labels: dates,
+                                    datasets: [{
+                                        label: 'Daily Incidents',
+                                        data: data.counts || [],
+                                        borderColor: '#238636',
+                                        backgroundColor: 'rgba(35, 134, 54, 0.05)',
+                                        borderWidth: 2,
+                                        fill: true,
+                                        tension: 0.3,
+                                        pointRadius: 2,
+                                        pointBackgroundColor: '#238636'
+                                    }]
+                                },
+                                options: {
+                                    responsive: true,
+                                    maintainAspectRatio: false,
+                                    plugins: { legend: { display: false } },
+                                    scales: {
+                                        x: {
+                                            grid: { color: '#30363d' },
+                                            ticks: { color: '#8b949e', font: { size: 10 }, maxTicksLimit: 10 }
+                                        },
+                                        y: {
+                                            grid: { color: '#30363d' },
+                                            ticks: { color: '#8b949e', font: { size: 10 } },
+                                            suggestedMin: 0
+                                        }
                                     }
                                 }
-                            }
-                        });
+                            });
+                        }
                     }
 
                     function drawHourChart(data) {
                         const ctx = document.getElementById('canvasHeatmap')?.getContext('2d');
                         if (!ctx) return;
-                        if (hourChart) hourChart.destroy();
 
                         const labels = data.map(h => `${String(h.hour).padStart(2, '0')}:00`);
                         const durations = data.map(h => h.avg_duration_mins);
 
-                        hourChart = new Chart(ctx, {
-                            type: 'bar',
-                            data: {
-                                labels: labels,
-                                datasets: [{
-                                    label: 'Avg Duration',
-                                    data: durations,
-                                    backgroundColor: '#d29922',
-                                    borderRadius: 3,
-                                    barThickness: 12
-                                }]
-                            },
-                            options: {
-                                responsive: true,
-                                maintainAspectRatio: false,
-                                plugins: { legend: { display: false } },
-                                scales: {
-                                    x: {
-                                        grid: { display: false },
-                                        ticks: { color: '#8b949e', font: { size: 9 }, maxTicksLimit: 12 }
-                                    },
-                                    y: {
-                                        grid: { color: '#30363d' },
-                                        ticks: { color: '#8b949e', font: { size: 10 } },
-                                        suggestedMin: 0
+                        if (hourChart) {
+                            hourChart.data.labels = labels;
+                            hourChart.data.datasets[0].data = durations;
+                            hourChart.update();
+                        } else {
+                            hourChart = new Chart(ctx, {
+                                type: 'bar',
+                                data: {
+                                    labels: labels,
+                                    datasets: [{
+                                        label: 'Avg Duration',
+                                        data: durations,
+                                        backgroundColor: '#d29922',
+                                        borderRadius: 3,
+                                        barThickness: 12
+                                    }]
+                                },
+                                options: {
+                                    responsive: true,
+                                    maintainAspectRatio: false,
+                                    plugins: { legend: { display: false } },
+                                    scales: {
+                                        x: {
+                                            grid: { display: false },
+                                            ticks: { color: '#8b949e', font: { size: 9 }, maxTicksLimit: 12 }
+                                        },
+                                        y: {
+                                            grid: { color: '#30363d' },
+                                            ticks: { color: '#8b949e', font: { size: 10 } },
+                                            suggestedMin: 0
+                                        }
                                     }
                                 }
-                            }
-                        });
+                            });
+                        }
                     }
 
                     function drawModelChart() {
                         const ctx = document.getElementById('canvasModel')?.getContext('2d');
                         if (!ctx) return;
-                        if (modelChart) modelChart.destroy();
 
                         const AN_HISTORY = Array.from({ length: 30 }, (_, i) => {
+                            const daySeed = (i + 5) * 17 % 31;
                             const base = 45 + Math.sin(i * 0.4) * 15;
-                            const pred = Math.round(base + (Math.random() - 0.5) * 10);
-                            const act  = Math.round(base + (Math.random() - 0.5) * 16);
+                            const pred = Math.round(base + (daySeed % 5 - 2));
+                            const act  = Math.round(base + ((daySeed * 3) % 9 - 4));
                             return { day: i + 1, pred, act };
                         });
 
@@ -3270,53 +3542,60 @@
                         const predData = AN_HISTORY.map(d => d.pred);
                         const actData = AN_HISTORY.map(d => d.act);
 
-                        modelChart = new Chart(ctx, {
-                            type: 'line',
-                            data: {
-                                labels: labels,
-                                datasets: [
-                                    {
-                                        label: 'Predicted',
-                                        data: predData,
-                                        borderColor: '#58a6ff',
-                                        borderWidth: 2,
-                                        fill: false,
-                                        tension: 0.3,
-                                        pointRadius: 0
-                                    },
-                                    {
-                                        label: 'Actual',
-                                        data: actData,
-                                        borderColor: '#2ea043',
-                                        borderWidth: 2,
-                                        fill: false,
-                                        tension: 0.3,
-                                        pointRadius: 2,
-                                        pointBackgroundColor: '#2ea043'
-                                    }
-                                ]
-                            },
-                            options: {
-                                responsive: true,
-                                maintainAspectRatio: false,
-                                plugins: {
-                                    legend: {
-                                        display: true,
-                                        labels: { color: '#8b949e', font: { size: 10 } }
-                                    }
+                        if (modelChart) {
+                            modelChart.data.labels = labels;
+                            modelChart.data.datasets[0].data = predData;
+                            modelChart.data.datasets[1].data = actData;
+                            modelChart.update();
+                        } else {
+                            modelChart = new Chart(ctx, {
+                                type: 'line',
+                                data: {
+                                    labels: labels,
+                                    datasets: [
+                                        {
+                                            label: 'Predicted',
+                                            data: predData,
+                                            borderColor: '#58a6ff',
+                                            borderWidth: 2,
+                                            fill: false,
+                                            tension: 0.3,
+                                            pointRadius: 0
+                                        },
+                                        {
+                                            label: 'Actual',
+                                            data: actData,
+                                            borderColor: '#2ea043',
+                                            borderWidth: 2,
+                                            fill: false,
+                                            tension: 0.3,
+                                            pointRadius: 2,
+                                            pointBackgroundColor: '#2ea043'
+                                        }
+                                    ]
                                 },
-                                scales: {
-                                    x: {
-                                        grid: { display: false },
-                                        ticks: { color: '#8b949e', font: { size: 9 }, maxTicksLimit: 10 }
+                                options: {
+                                    responsive: true,
+                                    maintainAspectRatio: false,
+                                    plugins: {
+                                        legend: {
+                                            display: true,
+                                            labels: { color: '#8b949e', font: { size: 10 } }
+                                        }
                                     },
-                                    y: {
-                                        grid: { color: '#30363d' },
-                                        ticks: { color: '#8b949e', font: { size: 10 } }
+                                    scales: {
+                                        x: {
+                                            grid: { display: false },
+                                            ticks: { color: '#8b949e', font: { size: 9 }, maxTicksLimit: 10 }
+                                        },
+                                        y: {
+                                            grid: { color: '#30363d' },
+                                            ticks: { color: '#8b949e', font: { size: 10 } }
+                                        }
                                     }
                                 }
-                            }
-                        });
+                            });
+                        }
                     }
 
                     function initAnalyticsTable() {
@@ -3492,11 +3771,58 @@
                         }
                     }
 
+                    let _analyticsRefreshTimer = null;
+
+                    function setLoadingState(isLoading) {
+                        const syncEmoji = document.querySelector('#btnReloadAnalytics .sync-emoji');
+                        if (!syncEmoji) return;
+                        if (isLoading) {
+                            syncEmoji.classList.add('spin-icon');
+                        } else {
+                            syncEmoji.classList.remove('spin-icon');
+                        }
+                    }
+
+                    async function pullAnalysisDataPayloadWithSpinner() {
+                        setLoadingState(true);
+                        await pullAnalysisDataPayload();
+                        setLoadingState(false);
+                    }
+
+                    async function refreshAllAnalytics() {
+                        setLoadingState(true);
+                        await Promise.all([
+                            pullAnalysisDataPayload(),
+                            loadAnalyticsTable(analyticsTableOffset)
+                        ]);
+                        setLoadingState(false);
+                    }
+
+                    function startAutoRefresh() {
+                        if (_analyticsRefreshTimer) return; // already running
+                        _analyticsRefreshTimer = setInterval(() => {
+                            const activePanel = document.getElementById('viewAnalytics');
+                            if (activePanel && activePanel.classList.contains('active')) {
+                                console.log('[Analytics]: Auto-refresh tick...');
+                                refreshAllAnalytics();
+                            }
+                        }, 10000); // 10 second polling cycle
+                    }
+
+                    function stopAutoRefresh() {
+                        if (_analyticsRefreshTimer) {
+                            clearInterval(_analyticsRefreshTimer);
+                            _analyticsRefreshTimer = null;
+                        }
+                        setLoadingState(false);
+                    }
+
                     function bindToTabNavigation() {
+                        initAnalyticsTable();
+
                         const triggerButton = document.getElementById("btnReloadAnalytics");
                         triggerButton?.addEventListener("click", () => {
-                            pullAnalysisDataPayload();
-                            loadAnalyticsTable(0);
+                            refreshAllAnalytics();
                         });
 
                         const nativeSwitchTab = window.switchTab;
@@ -3506,9 +3832,11 @@
                             }
                             if (targetTab === 'analytics') {
                                 setTimeout(() => {
-                                    pullAnalysisDataPayload();
-                                    loadAnalyticsTable(0);
+                                    refreshAllAnalytics();
+                                    startAutoRefresh();
                                 }, 50);
+                            } else {
+                                stopAutoRefresh();
                             }
                         };
                     }
@@ -4455,7 +4783,7 @@
         </div>
 
         <div class="view-pane" id="viewControlCenter"
-            style="flex-direction: column; height: calc(100vh - 104px); overflow-y: auto; overflow-x: hidden; background: #0d1117; scroll-behavior: smooth;">
+            style="flex-direction: column; height: calc(100vh - 104px); overflow-y: hidden; overflow-x: hidden; background: #0d1117; scroll-behavior: smooth;">
 
             <style>
                 /* ── LAYOUT MATRIX CONTROLS ────────────────────────────────────── */
@@ -4463,7 +4791,7 @@
                     display: grid;
                     grid-template-columns: 360px 1fr;
                     gap: 0;
-                    height: calc(100vh - 104px);
+                    height: 60%;
                     flex-shrink: 0;
                     border-bottom: 1px solid #30363d;
                 }
@@ -4472,7 +4800,7 @@
                     display: grid;
                     grid-template-columns: 1fr 1fr;
                     gap: 0;
-                    min-height: 320px;
+                    height: 40%;
                     flex-shrink: 0;
                     background: #0d1117;
                 }
@@ -4636,7 +4964,8 @@
                     display: flex;
                     flex-direction: column;
                     gap: 12px;
-                    max-height: 400px;
+                    height: 100%;
+                    box-sizing: border-box;
                 }
 
                 .tcc-inventory-grid {
@@ -4746,6 +5075,72 @@
                     background: #f85149;
                     border: 2px solid #fff;
                     box-shadow: 0 0 6px #f85149;
+                }
+
+                /* ── TCC CONTROL ACTIONS STYLE ─────────────────────────────────── */
+                .tcc-actions {
+                    display: flex;
+                    gap: 6px;
+                    margin-top: 12px;
+                    border-top: 1px solid #30363d;
+                    padding-top: 10px;
+                }
+
+                .tcc-btn {
+                    flex: 1;
+                    padding: 6px 8px;
+                    border-radius: 6px;
+                    border: 1px solid #30363d;
+                    font-size: 10px;
+                    font-weight: 700;
+                    cursor: pointer;
+                    display: flex;
+                    align-items: center;
+                    justify-content: center;
+                    gap: 4px;
+                    transition: all 0.2s;
+                    text-transform: uppercase;
+                    letter-spacing: 0.3px;
+                }
+
+                .tcc-btn-resolve {
+                    background: rgba(46, 160, 67, 0.12);
+                    color: #3fb950;
+                    border-color: rgba(46, 160, 67, 0.25);
+                }
+                .tcc-btn-resolve:hover {
+                    background: rgba(46, 160, 67, 0.22);
+                    border-color: #3fb950;
+                }
+
+                .tcc-btn-barricade {
+                    background: rgba(240, 135, 0, 0.12);
+                    color: #ff9f0a;
+                    border-color: rgba(240, 135, 0, 0.25);
+                }
+                .tcc-btn-barricade:hover {
+                    background: rgba(240, 135, 0, 0.22);
+                    border-color: #ff9f0a;
+                }
+
+                .tcc-btn-barricade.active {
+                    background: rgba(248, 81, 73, 0.12);
+                    color: #f85149;
+                    border-color: rgba(248, 81, 73, 0.25);
+                }
+                .tcc-btn-barricade.active:hover {
+                    background: rgba(248, 81, 73, 0.22);
+                    border-color: #f85149;
+                }
+
+                .tcc-btn-diversion {
+                    background: rgba(56, 139, 253, 0.12);
+                    color: #58a6ff;
+                    border-color: rgba(56, 139, 253, 0.25);
+                }
+                .tcc-btn-diversion:hover {
+                    background: rgba(56, 139, 253, 0.22);
+                    border-color: #58a6ff;
                 }
             </style>
 
@@ -4857,15 +5252,125 @@
                             });
                     }
 
+                    // Render either global dispatches or station-specific dispatches depending on selection
+                    function renderTccDispatches() {
+                        const dispContainer = document.getElementById('tccDispatchesContainer');
+                        if (!dispContainer) return;
+
+                        let dispatchesToRender = [];
+                        let isGlobal = !selectedStationName;
+
+                        if (isGlobal) {
+                            // Gather all dispatches across all stations
+                            Object.keys(groupedStations).forEach(stationKey => {
+                                const st = groupedStations[stationKey];
+                                st.dispatches.forEach(disp => {
+                                    dispatchesToRender.push({
+                                        ...disp,
+                                        station_name: st.name,
+                                        station_key: stationKey
+                                    });
+                                });
+                            });
+                            // Update header to global title
+                            const headerTitle = document.querySelector('#tccDispatchesContainer')?.previousElementSibling?.firstElementChild;
+                            if (headerTitle) {
+                                headerTitle.textContent = "All Active Dispatches & Enroute Tracks";
+                            }
+                        } else {
+                            const st = groupedStations[selectedStationName];
+                            if (st) {
+                                dispatchesToRender = st.dispatches.map(disp => ({
+                                    ...disp,
+                                    station_name: st.name,
+                                    station_key: selectedStationName
+                                }));
+                                // Update header to station-specific title
+                                const headerTitle = document.querySelector('#tccDispatchesContainer')?.previousElementSibling?.firstElementChild;
+                                if (headerTitle) {
+                                    headerTitle.textContent = `Active Dispatches: ${st.name}`;
+                                }
+                            }
+                        }
+
+                        if (dispatchesToRender.length === 0) {
+                            dispContainer.innerHTML = '<div class="tcc-empty-msg">No active dispatches.</div>';
+                            return;
+                        }
+
+                        dispContainer.innerHTML = dispatchesToRender.map(disp => {
+                            let resourceBadges = '';
+                            if (disp.allocated_resources && Object.keys(disp.allocated_resources).length > 0) {
+                                resourceBadges = Object.entries(disp.allocated_resources)
+                                    .filter(([name]) => name !== 'available_resources' && name !== 'constables_needed' && name !== 'barricades_needed')
+                                    .map(([name, qty]) => {
+                                        let displayName = name;
+                                        if (name === 'constables') displayName = 'Constables';
+                                        if (name === 'barricades') displayName = 'Barricades';
+                                        return `<span style="display:inline-block; font-size:10px; background:rgba(56, 139, 253, 0.15); color:#58a6ff; border:1px solid rgba(56, 139, 253, 0.3); padding:2px 6px; border-radius:4px; margin-right:4px; margin-top:4px;">🚒 ${displayName}: ${qty}</span>`;
+                                    })
+                                    .join('');
+                            }
+                            
+                            let delayText = '';
+                            if (disp.predictive_metrics && disp.predictive_metrics.predicted_clearance_time_minutes) {
+                                delayText = `<div style="font-size: 11px; margin-top: 6px; color:#ff7b72;">⏱️ Est. Clearance: <strong>${disp.predictive_metrics.predicted_clearance_time_minutes} mins</strong></div>`;
+                            }
+
+                            const isSelected = selectedDispatchId && selectedDispatchId.toString() === disp.report_id.toString();
+                            const isBarricaded = disp.barricaded === 1 || disp.barricaded === true;
+                            const barricadeLabel = isBarricaded ? '🚧 Clear' : '🚧 Block';
+                            const barricadeClass = isBarricaded ? 'active' : '';
+
+                            // Clicking global cards will trigger station selection + route layout plots
+                            const clickHandler = isGlobal
+                                ? `window.tccSelectStation('${encodeURIComponent(disp.station_key)}', true); window.tccSelectDispatch('${disp.report_id}', '${encodeURIComponent(disp.station_key)}');`
+                                : `window.tccSelectDispatch('${disp.report_id}', '${encodeURIComponent(disp.station_key)}');`;
+
+                            return `
+                                <div class="tcc-report-card ${isSelected ? 'selected' : ''}" id="tcc-card-${disp.report_id}" style="margin-bottom:10px; display:flex; flex-direction:column;" onclick="${clickHandler}">
+                                    <div class="tcc-rc-content" style="width: 100%;">
+                                        <div class="tcc-rc-title" style="display:flex; justify-content:space-between; align-items:center;">
+                                            <span>🚨 ${disp.issue_type} (ID: ${disp.report_id})</span>
+                                            ${isBarricaded ? '<span style="font-size:9px; background:rgba(248,81,73,0.15); color:#f85149; border:1px solid rgba(248,81,73,0.25); padding:1px 5px; border-radius:4px; font-weight:bold; text-transform:uppercase; letter-spacing:0.3px;">BLOCKED</span>' : ''}
+                                        </div>
+                                        <div class="tcc-rc-loc" style="color:#8b949e; font-size:11px; margin-top:2px;">Location: ${disp.location_name}</div>
+                                        ${isGlobal ? `<div style="color:#58a6ff; font-size:11px; margin-top:2px;">Station: <strong>${disp.station_name}</strong></div>` : ''}
+                                        <div class="tcc-rc-dist" style="color:#8b949e; font-size:11px; margin-top:2px;">Target Range: ${disp.distance_km} KM</div>
+                                        ${delayText}
+                                        ${resourceBadges ? `
+                                            <div style="margin-top:8px; border-top:1px solid #21262d; padding-top:6px;">
+                                                <div style="font-size:9px; font-weight:bold; color:#8b949e; text-transform:uppercase;">Dispatched Assets:</div>
+                                                <div style="display:flex; flex-wrap:wrap;">${resourceBadges}</div>
+                                            </div>
+                                        ` : ''}
+                                    </div>
+                                    <div class="tcc-actions">
+                                        <button class="tcc-btn tcc-btn-barricade ${barricadeClass}" onclick="event.stopPropagation(); window.tccToggleBarricade('${disp.report_id}', ${isBarricaded ? 1 : 0}, '${encodeURIComponent(disp.station_key)}')">
+                                            ${barricadeLabel}
+                                        </button>
+                                        <button class="tcc-btn tcc-btn-diversion" onclick="event.stopPropagation(); window.tccTriggerDiversion('${disp.report_id}', '${encodeURIComponent(disp.station_key)}')">
+                                            🔀 Detour
+                                        </button>
+                                        <button class="tcc-btn tcc-btn-resolve" onclick="event.stopPropagation(); window.tccResolveIncident('${disp.report_id}', '${encodeURIComponent(disp.station_key)}')">
+                                            ✅ Resolve
+                                        </button>
+                                    </div>
+                                </div>
+                            `;
+                        }).join('');
+                    }
+
                     // Group core object layers by managing Station Name 
                     function processAssignmentsPayload(assignments) {
                         groupedStations = {};
 
                         assignments.forEach(item => {
-                            const sName = item.assignment.station_name || "Unknown Jurisdiction";
+                            const assignmentObj = item.assignment || {};
+                            const sName = assignmentObj.station_name || "Unknown Jurisdiction";
 
                             if (!groupedStations[sName]) {
-                                const rawCoords = item.assignment.station_coordinates || {};
+                                const rawCoords = assignmentObj.station_coordinates || {};
                                 groupedStations[sName] = {
                                     name: sName,
                                     coordinates: {
@@ -4882,8 +5387,9 @@
                                 report_id: item.report_id,
                                 issue_type: item.issue_type,
                                 location_name: item.location_name,
-                                distance_km: item.assignment.distance_km,
-                                polyline: item.assignment.route_polyline,
+                                distance_km: assignmentObj.distance_km || 0,
+                                polyline: assignmentObj.route_polyline || [],
+                                barricaded: item.barricaded || 0,
                                 coordinates: {
                                     lat: rawIncCoords.lat || rawIncCoords.latitude || 0,
                                     lng: rawIncCoords.lng || rawIncCoords.lon || rawIncCoords.longitude || 0
@@ -4895,6 +5401,16 @@
 
                         renderStationsList();
                         renderMapMarkers();
+
+                        // If a station is already selected, re-select it to refresh its cards and route overlays
+                        if (selectedStationName) {
+                            window.tccSelectStation(encodeURIComponent(selectedStationName), true);
+                            if (selectedDispatchId) {
+                                window.tccSelectDispatch(selectedDispatchId, encodeURIComponent(selectedStationName));
+                            }
+                        } else {
+                            renderTccDispatches();
+                        }
                     }
 
                     // Render Sidebar Stations View
@@ -5009,44 +5525,7 @@
                         }
 
                         // Render Reports Block
-                        const dispContainer = document.getElementById('tccDispatchesContainer');
-                        if (dispContainer) {
-                            if (st.dispatches.length === 0) {
-                                dispContainer.innerHTML = '<div class="tcc-empty-msg">No dispatches bound to node.</div>';
-                            } else {
-                                dispContainer.innerHTML = st.dispatches.map(disp => {
-                                    let resourceBadges = '';
-                                    if (disp.allocated_resources && Object.keys(disp.allocated_resources).length > 0) {
-                                        resourceBadges = Object.entries(disp.allocated_resources)
-                                            .map(([name, qty]) => `<span style="display:inline-block; font-size:10px; background:rgba(56, 139, 253, 0.15); color:#58a6ff; border:1px solid rgba(56, 139, 253, 0.3); padding:2px 6px; border-radius:4px; margin-right:4px; margin-top:4px;">🚒 ${name}: ${qty}</span>`)
-                                            .join('');
-                                    }
-                                    
-                                    let delayText = '';
-                                    if (disp.predictive_metrics && disp.predictive_metrics.predicted_clearance_time_minutes) {
-                                        delayText = `<div style="font-size: 11px; margin-top: 6px; color:#ff7b72;">⏱️ Est. Clearance: <strong>${disp.predictive_metrics.predicted_clearance_time_minutes} mins</strong></div>`;
-                                    }
-
-                                    const isSelected = selectedDispatchId && selectedDispatchId.toString() === disp.report_id.toString();
-                                    return `
-                                        <div class="tcc-report-card ${isSelected ? 'selected' : ''}" id="tcc-card-${disp.report_id}" style="margin-bottom:10px;" onclick="window.tccSelectDispatch('${disp.report_id}', '${encodeURIComponent(key)}')">
-                                            <div class="tcc-rc-content">
-                                                <div class="tcc-rc-title">🚨 ${disp.issue_type} (ID: ${disp.report_id})</div>
-                                                <div class="tcc-rc-loc" style="color:#8b949e; font-size:11px; margin-top:2px;">Location: ${disp.location_name}</div>
-                                                <div class="tcc-rc-dist" style="color:#8b949e; font-size:11px; margin-top:2px;">Target Range: ${disp.distance_km} KM</div>
-                                                ${delayText}
-                                                ${resourceBadges ? `
-                                                    <div style="margin-top:8px; border-top:1px solid #21262d; padding-top:6px;">
-                                                        <div style="font-size:9px; font-weight:bold; color:#8b949e; text-transform:uppercase;">Dispatched Assets:</div>
-                                                        <div style="display:flex; flex-wrap:wrap;">${resourceBadges}</div>
-                                                    </div>
-                                                ` : ''}
-                                            </div>
-                                        </div>
-                                    `;
-                                }).join('');
-                            }
-                        }
+                        renderTccDispatches();
 
                         // Draw Real Polylines Map Routes
                         let bounds = [];
@@ -5060,6 +5539,22 @@
                                 });
                                 layers.routes.addLayer(routeLine);
                                 bounds.push(disp.polyline);
+
+                                // Add roadblock overlay if barricaded
+                                const isBarricaded = disp.barricaded === 1 || disp.barricaded === true;
+                                if (isBarricaded && disp.polyline.length > 1) {
+                                    const totalNodes = disp.polyline.length;
+                                    const blockedSegment = [disp.polyline[totalNodes - 2], disp.polyline[totalNodes - 1]];
+                                    const blockedLine = L.polyline(blockedSegment, {
+                                        color: '#f85149',
+                                        weight: 6,
+                                        opacity: 0.85,
+                                        dashArray: '5, 8',
+                                        lineJoin: 'round'
+                                    });
+                                    blockedLine.bindTooltip(`🚧 Road Blocked (Incident ID: ${disp.report_id})`);
+                                    layers.routes.addLayer(blockedLine);
+                                }
 
                                 // Midpoint enroute visual marker mapping
                                 if (disp.polyline.length >= 2) {
@@ -5114,6 +5609,7 @@
 
                         st.dispatches.forEach(disp => {
                             const isSelected = disp.report_id.toString() === reportId.toString();
+                            const isBarricaded = disp.barricaded === 1 || disp.barricaded === true;
 
                             if (disp.polyline && Array.isArray(disp.polyline) && disp.polyline.length > 0) {
                                 const routeLine = L.polyline(disp.polyline, {
@@ -5126,6 +5622,21 @@
                                 
                                 if (isSelected) {
                                     selectedPolyline = disp.polyline;
+                                }
+
+                                // Add roadblock overlay if barricaded
+                                if (isBarricaded && disp.polyline.length > 1) {
+                                    const totalNodes = disp.polyline.length;
+                                    const blockedSegment = [disp.polyline[totalNodes - 2], disp.polyline[totalNodes - 1]];
+                                    const blockedLine = L.polyline(blockedSegment, {
+                                        color: '#f85149',
+                                        weight: isSelected ? 8 : 5,
+                                        opacity: isSelected ? 1.0 : 0.4,
+                                        dashArray: '5, 8',
+                                        lineJoin: 'round'
+                                    });
+                                    blockedLine.bindTooltip(`🚧 Road Blocked (Incident ID: ${disp.report_id})`);
+                                    layers.routes.addLayer(blockedLine);
                                 }
 
                                 // Midpoint enroute vehicle mapping
@@ -5168,6 +5679,189 @@
                         }
                     };
 
+                    // ── TCC INTERACTION ACTION HANDLERS ─────────────────────────────
+                    window.tccToggleBarricade = function(reportId, currentStatus, escapedStationKey) {
+                        const stationKey = decodeURIComponent(escapedStationKey);
+                        const newStatus = currentStatus === 1 ? 0 : 1;
+                        
+                        fetch('/api/toggle_barricade', {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify({ id: reportId, status: newStatus })
+                        })
+                        .then(res => res.json())
+                        .then(data => {
+                            if (data.success) {
+                                console.log("[TCC Barricade Sync]:", data.message);
+                                
+                                // Update status in local appState
+                                if (window.appState && window.appState.reports) {
+                                    const match = window.appState.reports.find(r => r.id === reportId);
+                                    if (match) match.barricaded = newStatus;
+                                }
+                                
+                                // Update groupedStations in local state memory
+                                const st = groupedStations[stationKey];
+                                if (st) {
+                                    const disp = st.dispatches.find(d => d.report_id.toString() === reportId.toString());
+                                    if (disp) {
+                                        disp.barricaded = newStatus;
+                                    }
+                                }
+                                
+                                // Re-render TCC panels dynamically
+                                renderStationsList();
+                                renderMapMarkers();
+                                window.tccSelectStation(escapedStationKey);
+                                if (selectedDispatchId && selectedDispatchId.toString() === reportId.toString()) {
+                                    window.tccSelectDispatch(reportId, escapedStationKey);
+                                }
+                            } else {
+                                alert("Failed to toggle roadblock: " + (data.error || "Unknown error"));
+                            }
+                        })
+                        .catch(err => {
+                            console.error("[TCC Barricade Sync Error]:", err);
+                            alert("Failed to sync roadblock status with server.");
+                        });
+                    };
+
+                    window.tccResolveIncident = function(reportId, escapedStationKey) {
+                        if (!confirm(`Are you sure you want to resolve and clear incident ${reportId}?`)) return;
+                        
+                        fetch(`/api/reports/resolve/${reportId}`, {
+                            method: 'POST'
+                        })
+                        .then(res => res.json())
+                        .then(data => {
+                            if (data.success) {
+                                alert(`Incident ${reportId} resolved successfully.`);
+                                
+                                // Clean up local appState
+                                if (window.appState && window.appState.reports) {
+                                    window.appState.reports = window.appState.reports.filter(r => r.id !== reportId);
+                                }
+                                
+                                // Fetch fresh assignments telemetry
+                                fetchAssignmentsTelemetry();
+                                
+                                // Reset selection if it matches
+                                if (selectedDispatchId && selectedDispatchId.toString() === reportId.toString()) {
+                                    selectedDispatchId = null;
+                                    layers.routes.clearLayers();
+                                }
+                                
+                                // Reload main map and other dashboard panels
+                                if (typeof window.loadInitialDataStack === 'function') {
+                                    window.loadInitialDataStack();
+                                }
+                            } else {
+                                alert("Failed to resolve incident: " + (data.error || "Unknown error"));
+                            }
+                        })
+                        .catch(err => {
+                            console.error("[TCC Resolve Error]:", err);
+                            alert("Failed to resolve incident. Server connection error.");
+                        });
+                    };
+
+                    window.tccTriggerDiversion = function(reportId, escapedStationKey) {
+                        const stationKey = decodeURIComponent(escapedStationKey);
+                        const st = groupedStations[stationKey];
+                        if (!st) return;
+                        
+                        const disp = st.dispatches.find(d => d.report_id.toString() === reportId.toString());
+                        if (!disp) return;
+                        
+                        const origin = st.coordinates;
+                        const dest = disp.coordinates;
+                        
+                        if (!origin.lat || !origin.lng || !dest.lat || !dest.lng) {
+                            alert("Unable to fetch station or dispatch coordinates for diversion calculations.");
+                            return;
+                        }
+                        
+                        // Set loading state on the button
+                        const btn = document.querySelector(`#tcc-card-${reportId} .tcc-btn-diversion`);
+                        const origText = btn ? btn.textContent : "🔀 Detour";
+                        if (btn) {
+                            btn.textContent = "Loading...";
+                            btn.disabled = true;
+                        }
+                        
+                        const isBarricaded = disp.barricaded === 1 || disp.barricaded === true;
+                        const url = `/api/route_diversion?origin_lat=${origin.lat}&origin_lng=${origin.lng}&dest_lat=${dest.lat}&dest_lng=${dest.lng}&report_id=${reportId}&barricaded=${isBarricaded}`;
+                        
+                        fetch(url)
+                        .then(res => res.json())
+                        .then(data => {
+                            if (btn) {
+                                btn.textContent = origText;
+                                btn.disabled = false;
+                            }
+                            
+                            if (!data.success || !data.route || data.route.length === 0) {
+                                alert("Could not generate detour bypass route. All connected routes might be heavily congested.");
+                                return;
+                            }
+                            
+                            // Select this dispatch visually first
+                            window.tccSelectDispatch(reportId, escapedStationKey);
+                            
+                            // Clear only the routes layer to draw the diversion
+                            layers.routes.clearLayers();
+                            
+                            const routeCoords = data.route;
+                            
+                            // Draw the bypass route polyline as a dashed purple line to stand out
+                            const shadowPoly = L.polyline(routeCoords, {
+                                color: '#000000',
+                                weight: 8,
+                                opacity: 0.55,
+                                lineJoin: 'round'
+                            }).addTo(map);
+                            
+                            const mainPoly = L.polyline(routeCoords, {
+                                color: '#bc8cff', // Premium purple color
+                                weight: 5,
+                                opacity: 0.95,
+                                dashArray: '8, 12',
+                                lineJoin: 'round'
+                            }).addTo(map);
+                            
+                            mainPoly.bindTooltip(`🔀 Dynamic Detour Route (Bypassing Bottleneck)`, { sticky: true });
+                            
+                            layers.routes.addLayer(shadowPoly);
+                            layers.routes.addLayer(mainPoly);
+                            
+                            // Mark vehicle mid-point enroute
+                            if (routeCoords.length >= 2) {
+                                const midIdx = Math.floor(routeCoords.length / 2);
+                                const midPoint = routeCoords[midIdx];
+                                const vehicleIcon = L.divIcon({
+                                    className: '',
+                                    html: `<div style="font-size: 22px; filter: drop-shadow(0 0 6px #bc8cff); animation: pulse 1.5s infinite;">🚑</div>`,
+                                    iconAnchor: [11, 11]
+                                });
+                                const vehicleMarker = L.marker(midPoint, { icon: vehicleIcon }).addTo(map);
+                                vehicleMarker.bindTooltip(`<b>Detour enroute</b><br>ID: ${reportId}`, { direction: 'top' });
+                                layers.routes.addLayer(vehicleMarker);
+                                setTimeout(() => vehicleMarker.openTooltip(), 350);
+                            }
+                            
+                            map.fitBounds(L.polyline(routeCoords).getBounds(), { padding: [50, 50], maxZoom: 15 });
+                            alert("🔀 Detour route calculated successfully using OSMnx, bypassing active incidents!");
+                        })
+                        .catch(err => {
+                            console.error("[TCC Diversion Error]:", err);
+                            if (btn) {
+                                btn.textContent = origText;
+                                btn.disabled = false;
+                            }
+                            alert("Failed to compute detour route. Server connection error.");
+                        });
+                    };
+
                     function clearMapSelection() {
                         selectedStationName = null;
                         selectedDispatchId = null;
@@ -5175,7 +5869,7 @@
                         renderStationsList();
                         document.getElementById('tccMapStatus').textContent = 'Select a station to map live routing geometries';
                         document.getElementById('tccInventoryContainer').innerHTML = '<div class="tcc-empty-msg" style="padding:15px; grid-column:1/-1;">Select an active station to review inventory telemetry.</div>';
-                        document.getElementById('tccDispatchesContainer').innerHTML = '<div class="tcc-empty-msg" style="padding:15px;">Select an active station to track localized emergency runs.</div>';
+                        renderTccDispatches();
                         map.setView([12.9716, 77.5946], 11);
                     }
 
@@ -5188,6 +5882,7 @@
                             initTccModule();
                         } else {
                             map.invalidateSize();
+                            fetchAssignmentsTelemetry();
                         }
                     };
 

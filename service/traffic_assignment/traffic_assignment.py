@@ -69,6 +69,7 @@ class TrafficAssignmentManager:
                 "issue_type": report.get("issue_type"),
                 "location_name": report.get("location_name"),
                 "coordinates": {"lat": float(lat), "lng": float(lng)},
+                "barricaded": report.get("barricaded", 0),
                 "assignment": {
                     "station_name": assigned_station_name,
                     "station_coordinates": route_assignment["station_location"],
